@@ -1,16 +1,16 @@
 ASHRAE 241 Risk Model Simulation
 ================================
 
-This repository contains a Monte Carlo simulation to estimate airborne infection risk in indoor environments using the ASHRAE Standard 241 framework. It models quanta generation, airflow, deposition, and removal rates to compute infection probabilities across various occupancy categories.
+This repository contains a Monte Carlo simulation to estimate airborne infection risk in indoor environments using the framework from ASHRAE Standard 241. The model evaluates the infection risk as a function of equivalent clean airflow rates (ECAi), viral emission characteristics, occupant behavior, and space properties.
 
 Features
 --------
 
-- Simulates infection probability using a mechanistic model
-- Supports a wide range of occupancy types (e.g., Classroom, Gym, Office)
-- Includes variable parameters: breathing rate, particle sizes, viral load, ventilation
-- Automatically stops when the 96th percentile of infection probability drops below 0.1%
-- Generates a log-scale histogram of infection probability from the final run
+- Simulates infection probability using a mechanistic Wells-Riley-based approach.
+- Supports various occupancy categories: Classroom, Gym, Office, Warehouse, etc.
+- Community prevalence (infection rate) incorporated into simulations.
+- Runs until the 96th percentile of infection risk drops below 0.1%.
+- Generates a histogram (log scale) of infection probability from the final iteration.
 
 Requirements
 ------------
@@ -19,45 +19,32 @@ Requirements
 - numpy
 - matplotlib
 
-Install dependencies with:
+To install dependencies:
 
     pip install numpy matplotlib
 
 Usage
 -----
 
-Run the simulation with the desired occupancy category:
+Run the simulation from the command line, providing the occupancy category as an argument:
 
     python main.py Classroom
 
-Replace `Classroom` with any valid category such as `Gym`, `Office`, `Warehouse`, etc.
+Replace `Classroom` with other valid categories such as `Office`, `Gym`, `Warehouse`, etc.
 
 Output
 ------
 
-- Console output showing infection probability statistics per ECAi (L/s/person)
-- Stops iterating once the 96th percentile is < 0.1%
-- A plot showing the histogram of infection probabilities (log scale)
-
-Key Variables
--------------
-
-- ECAi: Equivalent clean air per person (L/s/person)
-- I0: Number of people in the space
-- community_rate: Community infection prevalence (0–1)
-- QER: Quanta emission rate (quanta/hour)
-- P: Infection probability (dimensionless)
-
-Simulation Logic
-----------------
-
-- Each simulation draws random samples from biological and physical distributions
-- Number of infectious individuals is simulated using community_rate as a threshold
-- Model includes deposition, biological decay, ventilation, and mask effectiveness
+- Terminal output showing the mean, median, min, max, and 96th percentile infection probability for each ECAi value.
+- Plot showing the histogram of infection probabilities (logarithmic y-axis).
+- Simulation automatically stops once the 96th percentile drops below 0.1%.
 
 Reference
 ---------
 
-This simulation approach is based on the methodology published in:
+The simulation is based on the methodology described in the following publication:
 
-Peng, Z. et al., 2025. A mechanistic framework for evaluating air-cleaning technologies under ASHRAE Standard 241. *Building and Environment*, 248, 113318. https://doi.org/10.1016/j.buildenv.2025.113318
+Benjamin Jones, Christopher Iddon, Marwa Zaatari, Pawel Wargocki, Richard Bruns.  
+**Risk modeling for ASHRAE Standard 241-2023 – Control of infectious aerosols**.  
+*Building and Environment*, Volume 248, 2025, 113318.  
+https://doi.org/10.1016/j.buildenv.2025.113318
