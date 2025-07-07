@@ -106,48 +106,56 @@ def infection_probability(ECAi, par, category="Classroom"):
     I0 = par['I0']
     community_rate = par['community_rate']
     n_infected = np.random.binomial(I0, community_rate)
-    if n_infected == 0:
-        n_infected = 1  # risk-averse: minimum 1 infected
+    
+    if n_infected > 0:
+        # Sum QER for all infected
+        QER_sum = sum(QER(category) for _ in range(n_infected))
 
-    # Sum QER for all infected
-    QER_sum = sum(QER(category) for _ in range(n_infected))
+        mask_factor = (1 - par['mask_efficiency']) ** 2  # dimensionless
 
-    mask_factor = (1 - par['mask_efficiency']) ** 2  # dimensionless
+        # Quanta dose (updated, matches equation 2 logic)
+        Q = (par['PBR'] * par['D'] * mask_factor / (phi * par['VOL'])) * QER_sum
 
-    # Quanta dose (updated, matches equation 2 logic)
-    Q = (par['PBR'] * par['D'] * mask_factor / (phi * par['VOL'])) * QER_sum
-
-    P = 1 - np.exp(-Q)  # dimensionless (probability of infection) ...(1)
+        P = 1 - np.exp(-Q)  # (probability of infection) ...(1)
+        
+    else : 
+        P = 0
+    
     return P
 
 
 def compute_ECAi(par, target_P, category="Classroom"):
-    Q = -np.log(1 - target_P)  # (1)
-
+    
     # Sample the number of infected people (I) from a binomial distribution
     I0 = par['I0']
     community_rate = par['community_rate']
     n_infected = np.random.binomial(I0, community_rate)
-    if n_infected == 0:
-        n_infected = 1  # Risk-averse: minimum 1 infected
-
-    # Sum QER values for all infected individuals
-    QER_sum = sum(QER(category) for _ in range(n_infected))
     
-    # parameters from par
-    PBR = par['PBR']
-    D = par['D']
-    VOL = par['VOL']
-    mu = par['mask_efficiency']
-    mask_factor_squared = (1 - mu) ** 2
-    gamma = par['gamma']
-    lambda_bio = par['lambda_bio']
+    if n_infected > 0:
+        
+        Q = -np.log(1 - target_P)  # (1)
 
-    # Equation (2)
-    term1 = (PBR * D * mask_factor_squared / Q) * QER_sum
-    term2 = VOL * (gamma + lambda_bio)
-    ECAi = (1 / (3.6 * I0)) * (term1 - term2)
-    if ECAi < 0:
+        # Sum QER values for all infected individuals
+        QER_sum = sum(QER(category) for _ in range(n_infected))
+        
+        # parameters from par
+        PBR = par['PBR']
+        D = par['D']
+        VOL = par['VOL']
+        mu = par['mask_efficiency']
+        mask_factor_squared = (1 - mu) ** 2
+        gamma = par['gamma']
+        lambda_bio = par['lambda_bio']
+
+        # Equation (2)
+        term1 = (PBR * D * mask_factor_squared / Q) * QER_sum
+        term2 = VOL * (gamma + lambda_bio)
+        ECAi = (1 / (3.6 * I0)) * (term1 - term2)
+        if ECAi < 0:
+            ECAi = 0
+    
+    else :
         ECAi = 0
+        
     return ECAi
 
