@@ -29,7 +29,7 @@ occupancy_params = {
     "Spectator":      {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 15e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 100, "volume_m3": 6300,  "community_rate": 0.01},
     "Lobbies":        {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 4600,  "community_rate": 0.01},
     "Common":         {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 4600,  "community_rate": 0.01},
-    "Dwelling":       {"PBR_GM": 0.051,"PBR_GSD": 4.3, "Cdrop_GM": 40e4,  "Cdrop_GSD": 1.1, "d_GM": 2.2e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 6,   "volume_m3": 540,   "community_rate": 0.01}
+    "Dwelling":       {"PBR_GM": 0.51, "PBR_GSD": 4.3, "Cdrop_GM": 40e4,  "Cdrop_GSD": 1.1, "d_GM": 2.2e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 6,   "volume_m3": 540,   "community_rate": 0.01}
 }
 
 # --- FUNCTION DEFINITIONS ---
