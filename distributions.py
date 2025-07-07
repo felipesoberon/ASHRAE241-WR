@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-from model import sample_parameters, QER, occupancy_params
+from model import sample_parameters, QER, occupancy_params, infection_probability
 
 # -------- CATEGORY SELECTION --------
 if len(sys.argv) > 1:
@@ -16,6 +16,7 @@ else:
 print(f"Using occupancy category: {category}")
 
 N = 10000
+ECAi = 10  # Example value in L/s/person
 
 # Storage for variables from sample_parameters
 D_list = []
@@ -27,9 +28,11 @@ mask_efficiency_list = []
 community_rate_list = []
 PBR_list = []
 
-# Storage for QER and log10 QER
+# Storage for QER, log10 QER, Probability P, and log10 P
 QER_list = []
 log10_QER_list = []
+P_list = []
+log10_P_list = []
 
 for _ in range(N):
     par = sample_parameters(category=category)
@@ -46,7 +49,14 @@ for _ in range(N):
     QER_list.append(qer_val)
     log10_QER_list.append(np.log10(qer_val) if qer_val > 0 else np.nan)
 
-# Remove any nan values from log10_QER_list (in case of zero QER)
+    # Use infection_probability from model.py
+    P = infection_probability(ECAi, par, category=category)
+    P_pct = P * 100
+    P_list.append(P_pct)
+    if P_pct > 0:
+        log10_P_list.append(np.log10(P_pct))
+
+# Remove any nan values from log10_QER_list
 log10_QER_list = [v for v in log10_QER_list if not np.isnan(v)]
 
 # Prepare plotting
@@ -59,8 +69,10 @@ variables = [
     ("mask_efficiency", mask_efficiency_list, "Mask efficiency (fraction)", False),
     ("community_rate", community_rate_list, "Community infection rate (fraction)", False),
     ("PBR", PBR_list, "Pulmonary breathing rate (m³/h)", False),
-    ("QER", QER_list, "Quanta emission rate (quanta/h)", True),  # QER is log-normal, plot log-x
-    ("log₁₀ QER", log10_QER_list, "log₁₀ [Quanta emission rate] (quanta/h)", False),  # Added plot
+    ("QER", QER_list, "Quanta emission rate (quanta/h)", True),
+    ("log₁₀ QER", log10_QER_list, "log₁₀ [Quanta emission rate] (quanta/h)", False),
+    ("Infection Probability", P_list, "Probability of Infection (%)", False),
+    ("log₁₀ Probability", log10_P_list, "log₁₀ [Probability of Infection] (%)", False),
 ]
 
 n_plots = len(variables)
