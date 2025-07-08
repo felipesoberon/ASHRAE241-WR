@@ -1,0 +1,13 @@
+# Exclude all Excel files
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.csv
+
+# Exclude Python cache
+__pycache__/
+
+# Exclude documentation and archive folders
+DOC/
+zArchive/
