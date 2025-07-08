@@ -1,5 +1,14 @@
 # model.py
 
+from randomManager import (
+    random_lognormal_lhs,
+    random_uniform_lhs,
+    random_beta_lhs,
+    random_normal_lhs,
+    random_binomial_lhs,
+    random_log10normal_lhs
+)
+
 import numpy as np
 
 # --- OCCUPANCY PARAMETERS ---
@@ -49,16 +58,16 @@ def get_occupancy_parameters(category):
     }
     return occupancy_params.get(category, default)
 
-def sample_parameters(category="Classroom"):
+def sample_parameters(rng, category="Classroom"):
     occ = get_occupancy_parameters(category)
     VOL = occ["volume_m3"]                 # m³
     D = 1.0                                # h
     I0 = occ["I0"]                         # number of occupants
-    mask_efficiency = occ.get("mask_eff", 0.0)     # dimensionless
-    community_rate = occ.get("community_rate", 0.01)  # dimensionless
-    lambda_bio = np.random.lognormal(np.log(0.52), np.log(1.9))  # 1/h
-    gamma = np.random.uniform(0.42, 0.61)  # 1/h
-    PBR = np.random.lognormal(np.log(occ["PBR_GM"]), np.log(occ["PBR_GSD"]))  # m³/h
+    mask_efficiency = occ.get("mask_eff", 0.0)
+    community_rate = occ.get("community_rate", 0.01)
+    lambda_bio = random_lognormal_lhs(rng, mean=np.log(0.52), sigma=np.log(1.9))  # 1/h
+    gamma = random_uniform_lhs(rng, 0.42, 0.61)  # 1/h
+    PBR = random_lognormal_lhs(rng, mean=np.log(occ["PBR_GM"]), sigma=np.log(occ["PBR_GSD"]))  # m³/h
 
     return dict(
         D=D,
@@ -70,75 +79,56 @@ def sample_parameters(category="Classroom"):
         community_rate=community_rate,
         PBR=PBR
     )
-            
-def QER(category="Classroom"):
-    """
-    Computes the quanta emission rate per person (QER) for a given occupancy category.
-    Implements equations (3), (4), and (5) from the referenced publication.
-    """
+
+def QER(rng, category="Classroom"):
     occ = get_occupancy_parameters(category)
-    PBR = np.random.lognormal(np.log(occ["PBR_GM"]), np.log(occ["PBR_GSD"]))        # m³/h (pulmonary breathing rate)
-    C_drop = np.random.lognormal(np.log(occ["Cdrop_GM"]), np.log(occ["Cdrop_GSD"])) # particles/m³ (exhaled droplet conc.)
-    d = np.random.lognormal(np.log(occ["d_GM"]), np.log(occ["d_GSD"]))              # m (diameter)
-    E = np.random.beta(5.0, 2.0) * (5.0 - 2.0) + 2.0                                # dimensionless (elongation factor)
-    Vdrop = (np.pi / 6.0) * (d * E) ** 3 * C_drop                                   # m³/m³ (exhaled air) -- Eq (5)
-    GVL_ml = 10 ** np.random.normal(7.0, 1.4)                                       # RNA copies/ml
-    GVL_m3 = GVL_ml * 1e6                                                           # RNA copies/m³
-    VF = np.random.beta(5.0, 2.0) * (1e-2 - 1e-4) + 1e-4                            # dimensionless (viable fraction)
-    RD = 1                                                                          # dimensionless (respiratory droplet)
-    RTD = np.random.uniform(0.43, 0.65)                                             # dimensionless (respiratory tract deposition)
-    DK = np.random.uniform(5, 15)                                                   # virions/quanta
+    PBR = random_lognormal_lhs(rng, np.log(occ["PBR_GM"]), np.log(occ["PBR_GSD"]))
+    C_drop = random_lognormal_lhs(rng, np.log(occ["Cdrop_GM"]), np.log(occ["Cdrop_GSD"]))
+    d = random_lognormal_lhs(rng, np.log(occ["d_GM"]), np.log(occ["d_GSD"]))
+    E = random_beta_lhs(rng, a=5.0, b=2.0, loc=2.0, scale=3.0)  # in [2, 5]
+    Vdrop = (np.pi / 6.0) * (d * E) ** 3 * C_drop
+    GVL_ml = random_log10normal_lhs(rng, mu=7.0, sigma=1.4)
+    GVL_m3 = GVL_ml * 1e6
+    VF = random_beta_lhs(rng, a=5.0, b=2.0, loc=1e-4, scale=(1e-2 - 1e-4))  # in [1e-4, 1e-2]
+    RD = 1
+    RTD = random_uniform_lhs(rng, 0.43, 0.65)
+    DK = random_uniform_lhs(rng, 5, 15)
 
-    # Eq (4): Virion emission rate (VER)
-    VER = PBR * Vdrop * GVL_m3 * VF * RD                                            # virions/h
-
-    # Eq (3): Quanta emission rate (QER)
-    QER_val = RTD * VER / DK                                                        # quanta/h
-
+    VER = PBR * Vdrop * GVL_m3 * VF * RD
+    QER_val = RTD * VER / DK
     return QER_val
 
+def infection_probability(ECAi, par, rng, category="Classroom"):
+    TECAi = ECAi * par['I0'] * 3.6
+    phi = par['gamma'] + par['lambda_bio'] + TECAi / par['VOL']
 
-def infection_probability(ECAi, par, category="Classroom"):
-    TECAi = ECAi * par['I0'] * 3.6  # m³/h total equivalent clean airflow ... (7)
-    phi = par['gamma'] + par['lambda_bio'] + TECAi / par['VOL']  # 1/h (total removal rate) ...(6)
-
-    # Number of infected people
     I0 = par['I0']
     community_rate = par['community_rate']
-    n_infected = np.random.binomial(I0, community_rate)
-    
+    n_infected = random_binomial_lhs(rng, I0, community_rate)
+
+    infected_flag = 1 if n_infected > 0 else 0
+
     if n_infected > 0:
-        # Sum QER for all infected
-        QER_sum = sum(QER(category) for _ in range(n_infected))
-
-        mask_factor = (1 - par['mask_efficiency']) ** 2  # dimensionless
-
-        # Quanta dose (updated, matches equation 2 logic)
+        QER_sum = sum(QER(rng, category) for _ in range(n_infected))
+        mask_factor = (1 - par['mask_efficiency']) ** 2
         Q = (par['PBR'] * par['D'] * mask_factor / (phi * par['VOL'])) * QER_sum
-
-        P = 1 - np.exp(-Q)  # (probability of infection) ...(1)
-        
-    else : 
+        P = 1 - np.exp(-Q)
+    else:
         P = 0
-    
-    return P
 
+    return P, infected_flag
 
-def compute_ECAi(par, target_P, category="Classroom"):
-    
-    # Sample the number of infected people (I) from a binomial distribution
+def compute_ECAi(par, target_P, rng, category="Classroom"):
     I0 = par['I0']
     community_rate = par['community_rate']
-    n_infected = np.random.binomial(I0, community_rate)
-    
-    if n_infected > 0:
-        
-        Q = -np.log(1 - target_P)  # (1)
+    n_infected = random_binomial_lhs(rng, I0, community_rate)
 
-        # Sum QER values for all infected individuals
-        QER_sum = sum(QER(category) for _ in range(n_infected))
-        
-        # parameters from par
+    infected_flag = 1 if n_infected > 0 else 0
+
+    if n_infected > 0:
+        Q = -np.log(1 - target_P)
+        QER_sum = sum(QER(rng, category) for _ in range(n_infected))
+
         PBR = par['PBR']
         D = par['D']
         VOL = par['VOL']
@@ -147,15 +137,12 @@ def compute_ECAi(par, target_P, category="Classroom"):
         gamma = par['gamma']
         lambda_bio = par['lambda_bio']
 
-        # Equation (2)
         term1 = (PBR * D * mask_factor_squared / Q) * QER_sum
         term2 = VOL * (gamma + lambda_bio)
         ECAi = (1 / (3.6 * I0)) * (term1 - term2)
         if ECAi < 0:
             ECAi = 0
-    
-    else :
+    else:
         ECAi = 0
-        
-    return ECAi
 
+    return ECAi, infected_flag

@@ -2,6 +2,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from model import sample_parameters, QER, occupancy_params, infection_probability
+from randomManager import RandomNumberManager
 
 # -------- CATEGORY SELECTION --------
 if len(sys.argv) > 1:
@@ -17,6 +18,8 @@ print(f"Using occupancy category: {category}")
 
 N = 10000
 ECAi = 10  # Example value in L/s/person
+
+rng = RandomNumberManager()
 
 # Storage for variables from sample_parameters
 D_list = []
@@ -35,7 +38,7 @@ P_list = []
 log10_P_list = []
 
 for _ in range(N):
-    par = sample_parameters(category=category)
+    par = sample_parameters(rng, category=category)
     D_list.append(par['D'])
     VOL_list.append(par['VOL'])
     I0_list.append(par['I0'])
@@ -45,12 +48,12 @@ for _ in range(N):
     community_rate_list.append(par['community_rate'])
     PBR_list.append(par['PBR'])
 
-    qer_val = QER(category=category)
+    qer_val = QER(rng, category=category)
     QER_list.append(qer_val)
     log10_QER_list.append(np.log10(qer_val) if qer_val > 0 else np.nan)
 
     # Use infection_probability from model.py
-    P = infection_probability(ECAi, par, category=category)
+    P, _ = infection_probability(ECAi, par, rng, category=category)
     P_pct = P * 100
     P_list.append(P_pct)
     if P_pct > 0:

@@ -4,6 +4,7 @@ import numpy as np
 import csv
 import sys
 from model import sample_parameters, infection_probability, occupancy_params
+from randomManager import RandomNumberManager
 
 def main():
     # Get N from command line argument (default to 10000)
@@ -23,21 +24,23 @@ def main():
 
     results = []
 
-    print(f"\nSearching for ECAi (L/s/person) where mean probability < {target_prob*100:.2f}% for each category (N={N}):\n")
+    print(f"\nSearching for ECAi (L/s/person) where 96th percentile of probability < {target_prob*100:.2f}% for each category (N={N}):\n")
     print("| {:^20} | {:^28} |".format("Category", "Min ECAi (L/s/person)"))
     print("|" + "-"*22 + "|" + "-"*30 + "|")
+
+    rng = RandomNumberManager()  # Instantiate once per run
 
     for category in occupancy_params:
         found = False
         for ECAi in ECAi_values:
             probabilities = []
             for _ in range(N):
-                par = sample_parameters(category=category)
-                prob = infection_probability(ECAi, par, category=category)
+                par = sample_parameters(rng, category=category)
+                prob, _ = infection_probability(ECAi, par, rng, category=category)
                 probabilities.append(prob)
 
-            mean_prob = np.mean(probabilities)
-            if mean_prob < target_prob:
+            percentile_96 = np.percentile(probabilities, 96)
+            if percentile_96 < target_prob:
                 print("| {:<20} | {:>28.2f} |".format(category, ECAi))
                 results.append({
                     "Category": category,

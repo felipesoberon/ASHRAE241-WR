@@ -1,7 +1,14 @@
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-from model import get_occupancy_parameters, occupancy_params
+from model import get_occupancy_parameters, occupancy_params, QER
+from randomManager import (
+    RandomNumberManager,
+    random_lognormal_lhs,
+    random_uniform_lhs,
+    random_beta_lhs,
+    random_log10normal_lhs
+)
 
 # --- CATEGORY SELECTION ---
 if len(sys.argv) > 1:
@@ -17,6 +24,7 @@ print(f"Sampling QER internals for category: {category}")
 
 N = 10000
 occ = get_occupancy_parameters(category)
+rng = RandomNumberManager()
 
 # Sample arrays
 PBR_qer_list = []
@@ -35,23 +43,23 @@ QER_list = []
 log10_QER_list = []
 
 for _ in range(N):
-    PBR_qer = np.random.lognormal(np.log(occ["PBR_GM"]), np.log(occ["PBR_GSD"]))        # m³/h
-    C_drop = np.random.lognormal(np.log(occ["Cdrop_GM"]), np.log(occ["Cdrop_GSD"]))     # particles/m³
-    d = np.random.lognormal(np.log(occ["d_GM"]), np.log(occ["d_GSD"]))                  # m
-    E = np.random.beta(5.0, 2.0) * (5.0 - 2.0) + 2.0                                    # dimensionless
-    Vdrop = (np.pi / 6.0) * (d * E) ** 3 * C_drop                                       # m³/m³
-    GVL_ml = 10 ** np.random.normal(7.0, 1.4)                                            # RNA copies/ml
-    GVL_m3 = GVL_ml * 1e6                                                                # RNA copies/m³
+    PBR_qer = random_lognormal_lhs(rng, mean=np.log(occ["PBR_GM"]), sigma=np.log(occ["PBR_GSD"]))  # m³/h
+    C_drop = random_lognormal_lhs(rng, mean=np.log(occ["Cdrop_GM"]), sigma=np.log(occ["Cdrop_GSD"]))  # particles/m³
+    d = random_lognormal_lhs(rng, mean=np.log(occ["d_GM"]), sigma=np.log(occ["d_GSD"]))  # m
+    E = random_beta_lhs(rng, a=5.0, b=2.0, loc=2.0, scale=3.0)  # in [2, 5]
+    Vdrop = (np.pi / 6.0) * (d * E) ** 3 * C_drop
+    GVL_ml = random_log10normal_lhs(rng, mu=7.0, sigma=1.4)
+    GVL_m3 = GVL_ml * 1e6
     log10_GVL_ml = np.log10(GVL_ml)
     log10_GVL_m3 = np.log10(GVL_m3)
-    VF = np.random.beta(5.0, 2.0) * (1e-2 - 1e-4) + 1e-4                                 # dimensionless
-    RTD = np.random.uniform(0.43, 0.65)                                                  # dimensionless
-    DK = np.random.uniform(5, 15)                                                        # virions/quanta
-    RD = 1                                                                               # always 1
+    VF = random_beta_lhs(rng, a=5.0, b=2.0, loc=1e-4, scale=(1e-2 - 1e-4))
+    RTD = random_uniform_lhs(rng, 0.43, 0.65)
+    DK = random_uniform_lhs(rng, 5, 15)
+    RD = 1  # always 1
 
-    VER = PBR_qer * Vdrop * GVL_m3 * VF * RD                                            # virions/h
-    QER_val = RTD * VER / DK                                                            # quanta/h
-    log10_QER = np.log10(QER_val) if QER_val > 0 else np.nan  # Avoid log(0) issues
+    VER = PBR_qer * Vdrop * GVL_m3 * VF * RD
+    QER_val = RTD * VER / DK
+    log10_QER = np.log10(QER_val) if QER_val > 0 else np.nan
 
     # Save
     PBR_qer_list.append(PBR_qer)
