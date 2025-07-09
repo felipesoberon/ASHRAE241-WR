@@ -36,7 +36,7 @@ def main():
             probabilities = []
             for _ in range(N):
                 par = sample_parameters(rng, category=category)
-                prob, _ = infection_probability(ECAi, par, rng, category=category)
+                prob, _ = infection_probability(ECAi, par, rng, category=category, require_infectors=False)
                 probabilities.append(prob)
 
             percentile_96 = np.percentile(probabilities, 96)

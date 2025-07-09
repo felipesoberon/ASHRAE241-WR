@@ -14,32 +14,33 @@ import numpy as np
 # --- OCCUPANCY PARAMETERS ---
 
 occupancy_params = {
-    "Cell":           {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 14e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 30,  "volume_m3": 320, "community_rate": 0.01},
-    "Dayroom":        {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 19e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 30,  "volume_m3": 600, "community_rate": 0.01},
-    "Food":           {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 15e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 50,  "volume_m3": 360, "community_rate": 0.01},
-    "Gym":            {"PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 180, "volume_m3": 1900, "community_rate": 0.01},
-    "Office":         {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 14e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 50,  "volume_m3": 2700, "community_rate": 0.01},
-    "Retail":         {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 11e4,  "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 6000, "community_rate": 0.01},
-    "Transportation": {"PBR_GM": 0.64, "PBR_GSD": 1.2, "Cdrop_GM": 15e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 100, "volume_m3": 10000, "community_rate": 0.01},
-    "Classroom":      {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 17e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 30,  "volume_m3": 320, "community_rate": 0.01},
-    "Lecture":        {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 1800, "community_rate": 0.01},
-    "Manufacturing":  {"PBR_GM": 0.73, "PBR_GSD": 1.3, "Cdrop_GM": 15e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 70,  "volume_m3": 12000, "community_rate": 0.01},
-    "Sorting":        {"PBR_GM": 0.77, "PBR_GSD": 1.3, "Cdrop_GM": 19e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 20,  "volume_m3": 4800, "community_rate": 0.01},
-    "Warehouse":      {"PBR_GM": 0.77, "PBR_GSD": 1.3, "Cdrop_GM": 15e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 20,  "volume_m3": 1200, "community_rate": 0.01},
-    "Exam":           {"PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 32e4,  "Cdrop_GSD": 1.1, "d_GM": 2.0e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 3,   "volume_m3": 41, "community_rate": 0.03},
-    "Group":          {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 12e4,  "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 20,  "volume_m3": 270, "community_rate": 0.03},
-    "Patient":        {"PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 30e4,  "Cdrop_GSD": 1.1, "d_GM": 2.0e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 3,   "volume_m3": 81, "community_rate": 0.03},
-    "Resident":       {"PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 21e4,  "Cdrop_GSD": 1.1, "d_GM": 2.0e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 3,   "volume_m3": 81, "community_rate": 0.03},
-    "Waiting":        {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 11e4,  "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 30,  "volume_m3": 270, "community_rate": 0.03},
-    "Auditorium":     {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 4600, "community_rate": 0.01},
-    "Place":          {"PBR_GM": 0.50, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 180, "volume_m3": 2400, "community_rate": 0.01},
-    "Museum":         {"PBR_GM": 0.49, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 400, "volume_m3": 10000, "community_rate": 0.01},
-    "Convention":     {"PBR_GM": 0.49, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 400, "volume_m3": 10000, "community_rate": 0.01},
-    "Spectator":      {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 15e4,  "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 100, "volume_m3": 6300,  "community_rate": 0.01},
-    "Lobbies":        {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 4600,  "community_rate": 0.01},
-    "Common":         {"PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3": 4600,  "community_rate": 0.01},
-    "Dwelling":       {"PBR_GM": 0.51, "PBR_GSD": 4.3, "Cdrop_GM": 40e4,  "Cdrop_GSD": 1.1, "d_GM": 2.2e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 6,   "volume_m3": 540,   "community_rate": 0.01}
+    "Cell":          { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 14e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 30,  "volume_m3":  320,   "community_rate": 0.01, "ECAi": 15 },
+    "Dayroom":       { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 19e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 30,  "volume_m3":  600,   "community_rate": 0.01, "ECAi": 20 },
+    "Food":          { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 15e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 50,  "volume_m3":  360,   "community_rate": 0.01, "ECAi": 30 },
+    "Gym":           { "PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 180, "volume_m3":  1900,  "community_rate": 0.01, "ECAi": 40 },
+    "Office":        { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 14e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 50,  "volume_m3":  2700,  "community_rate": 0.01, "ECAi": 15 },
+    "Retail":        { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 11e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3":  6000,  "community_rate": 0.01, "ECAi": 20 },
+    "Transportation":{ "PBR_GM": 0.64, "PBR_GSD": 1.2, "Cdrop_GM": 15e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 100, "volume_m3":  10000, "community_rate": 0.01, "ECAi": 30 },
+    "Classroom":     { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 17e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 30,  "volume_m3":  320,   "community_rate": 0.01, "ECAi": 20 },
+    "Lecture":       { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3":  1800,  "community_rate": 0.01, "ECAi": 25 },
+    "Manufacturing": { "PBR_GM": 0.73, "PBR_GSD": 1.3, "Cdrop_GM": 15e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 70,  "volume_m3":  12000, "community_rate": 0.01, "ECAi": 25 },
+    "Sorting":       { "PBR_GM": 0.77, "PBR_GSD": 1.3, "Cdrop_GM": 19e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 20,  "volume_m3":  4800,  "community_rate": 0.01, "ECAi": 10 },
+    "Warehouse":     { "PBR_GM": 0.77, "PBR_GSD": 1.3, "Cdrop_GM": 15e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 20,  "volume_m3":  1200,  "community_rate": 0.01, "ECAi": 10 },
+    "Exam":          { "PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 32e4, "Cdrop_GSD": 1.1, "d_GM": 2.0e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 3,   "volume_m3":  41,    "community_rate": 0.03, "ECAi": 20 },
+    "Group":         { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 12e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 20,  "volume_m3":  270,   "community_rate": 0.03, "ECAi": 35 },
+    "Patient":       { "PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 30e4, "Cdrop_GSD": 1.1, "d_GM": 2.0e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 3,   "volume_m3":  81,    "community_rate": 0.03, "ECAi": 35 },
+    "Resident":      { "PBR_GM": 0.62, "PBR_GSD": 1.3, "Cdrop_GM": 21e4, "Cdrop_GSD": 1.1, "d_GM": 2.0e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 3,   "volume_m3":  81,    "community_rate": 0.03, "ECAi": 25 },
+    "Waiting":       { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 11e4, "Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.3, "I0": 30,  "volume_m3":  270,   "community_rate": 0.03, "ECAi": 45 },
+    "Auditorium":    { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3":  4600,  "community_rate": 0.01, "ECAi": 25 },
+    "Place":         { "PBR_GM": 0.50, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 180, "volume_m3":  2400,  "community_rate": 0.01, "ECAi": 25 },
+    "Museum":        { "PBR_GM": 0.49, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 400, "volume_m3":  10000, "community_rate": 0.01, "ECAi": 30 },
+    "Convention":    { "PBR_GM": 0.49, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 400, "volume_m3":  10000, "community_rate": 0.01, "ECAi": 30 },
+    "Spectator":     { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 15e4, "Cdrop_GSD": 1.1, "d_GM": 1.9e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 100, "volume_m3":  6300,  "community_rate": 0.01, "ECAi": 25 },
+    "Lobbies":       { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3":  4600,  "community_rate": 0.01, "ECAi": 25 },
+    "Common":        { "PBR_GM": 0.55, "PBR_GSD": 1.2, "Cdrop_GM": 9.8e4,"Cdrop_GSD": 1.1, "d_GM": 1.8e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 150, "volume_m3":  4600,  "community_rate": 0.01, "ECAi": 25 },
+    "Dwelling":      { "PBR_GM": 0.51, "PBR_GSD": 4.3, "Cdrop_GM": 40e4, "Cdrop_GSD": 1.1, "d_GM": 2.2e-6, "d_GSD": 1.1, "mask_eff": 0.0, "I0": 6,   "volume_m3":  540,   "community_rate": 0.01, "ECAi": 15 }
 }
+
 
 # --- FUNCTION DEFINITIONS ---
 
@@ -98,13 +99,19 @@ def QER(rng, category="Classroom"):
     QER_val = RTD * VER / DK
     return QER_val
 
-def infection_probability(ECAi, par, rng, category="Classroom"):
+
+def infection_probability(ECAi, par, rng, category="Classroom", require_infectors=False):
     TECAi = ECAi * par['I0'] * 3.6
     phi = par['gamma'] + par['lambda_bio'] + TECAi / par['VOL']
 
     I0 = par['I0']
     community_rate = par['community_rate']
+    
     n_infected = random_binomial_lhs(rng, I0, community_rate)
+    # If require_infectors, redraw until at least 1 infector
+    if require_infectors:
+        while n_infected == 0:
+            n_infected = random_binomial_lhs(rng, I0, community_rate)
 
     infected_flag = 1 if n_infected > 0 else 0
 
@@ -117,6 +124,7 @@ def infection_probability(ECAi, par, rng, category="Classroom"):
         P = 0
 
     return P, infected_flag
+
 
 def compute_ECAi(par, target_P, rng, category="Classroom"):
     I0 = par['I0']
