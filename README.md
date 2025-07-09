@@ -56,10 +56,18 @@ Program Overview
     ```
     (Optionally specify number of runs, e.g. `python ecai.py 5000`)
 
-**probability.py**  
+**probabilityScan.py**  
+- Replaces the old `probability.py`.
 - Calculates the infection probability over 10,000 runs for a range of ECAi values (5, 10, ... 50 L/s/person) for each occupancy.
 - Reports the minimum ECAi at which the 96th percentile of infection probability is below 0.1%.
 - Results are saved to a CSV file.
+
+**probabilityECAi.py**  
+- Uses the ECAi values specified in the ASHRAE Standard 241 for each occupancy category.
+- Determines the 96th percentile infection probability for each occupancy, including **only simulation runs where there is at least one infector present** (i.e., if the random draw results in zero infectors, it redraws until at least one is present).
+- This method answers:
+  _“If I spend an hour in this location and there is at least one infected person present, what is the probability of catching the infection given the location is compliant with ASHRAE 241?”_
+- Results are printed in a table and saved to CSV.
 
 Usage
 -----
@@ -97,4 +105,3 @@ Benjamin Jones, Christopher Iddon, Marwa Zaatari, Pawel Wargocki, Richard Bruns.
 **Risk modeling for ASHRAE Standard 241-2023 – Control of infectious aerosols**.  
 *Building and Environment*, Volume 248, 2025, 113318.  
 https://doi.org/10.1016/j.buildenv.2025.113318
-
