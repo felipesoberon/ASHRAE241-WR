@@ -56,8 +56,10 @@ def generate_simulation_data(N=10000, mode="ECAi"):
 
 
 def update_option_states(*args):
-    ashrae_ecai_check.config(state="normal" if calculation_type.get() == "Infection Probability" else "disabled")
+    use_ashrae_ecai.set(True)
+    ashrae_ecai_check.state(["disabled", "selected"])
     community_rate_entry.config(state="disabled" if use_ashrae_cir.get() else "normal")
+
 
 def run_simulation():
     progress["value"] = 0
@@ -127,6 +129,7 @@ calculation_type.bind("<<ComboboxSelected>>", update_option_states)
 
 use_ashrae_ecai = tk.BooleanVar(value=True)
 ashrae_ecai_check = ttk.Checkbutton(left_frame, text="Use ASHRAE 241 ECAi values", variable=use_ashrae_ecai)
+ashrae_ecai_check.state(["disabled", "selected"])
 ashrae_ecai_check.pack(anchor="w", pady=(0, 10))
 
 allow_zero_infector = tk.BooleanVar(value=True)
