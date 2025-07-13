@@ -100,12 +100,12 @@ def QER(rng, category="Classroom"):
     return QER_val
 
 
-def infection_probability(ECAi, par, rng, category="Classroom", require_infectors=False):
+def infection_probability(ECAi, par, rng, category="Classroom", require_infectors=False, override_community_rate=0):
     TECAi = ECAi * par['I0'] * 3.6
     phi = par['gamma'] + par['lambda_bio'] + TECAi / par['VOL']
 
     I0 = par['I0']
-    community_rate = par['community_rate']
+    community_rate = override_community_rate if override_community_rate > 0 else par['community_rate']
     
     n_infected = random_binomial_lhs(rng, I0, community_rate)
     # If require_infectors, redraw until at least 1 infector
@@ -126,10 +126,15 @@ def infection_probability(ECAi, par, rng, category="Classroom", require_infector
     return P, infected_flag
 
 
-def compute_ECAi(par, target_P, rng, category="Classroom"):
+def compute_ECAi(par, target_P, rng, category="Classroom", require_infectors=False, override_community_rate=0):
     I0 = par['I0']
-    community_rate = par['community_rate']
+    community_rate = override_community_rate if override_community_rate > 0 else par['community_rate']
+    
     n_infected = random_binomial_lhs(rng, I0, community_rate)
+    
+    if require_infectors:
+        while n_infected == 0:
+            n_infected = random_binomial_lhs(rng, I0, community_rate)
 
     infected_flag = 1 if n_infected > 0 else 0
 
