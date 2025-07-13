@@ -12,7 +12,12 @@ categories = list(occupancy_params.keys())
 # Sidebar for user inputs
 st.sidebar.header("Simulation Settings")
 calculation_type = st.sidebar.selectbox("Calculation Type:", ["ECAi", "Infection Probability"])
-use_ashrae_ecai = st.sidebar.checkbox("Use ASHRAE 241 ECAi values", value=True)
+
+#use_ashrae_ecai = st.sidebar.checkbox("Use ASHRAE 241 ECAi values", value=True)
+st.sidebar.markdown("### Use ASHRAE 241 ECAi values")
+st.sidebar.markdown("**(For Probability Calculation)**")
+use_ashrae_ecai = True
+
 allow_zero_infector = st.sidebar.checkbox("Allow Zero Infector Simulations", value=True)
 use_ashrae_cir = st.sidebar.checkbox("Use ASHRAE 241 Community Infection Rate", value=True)
 
