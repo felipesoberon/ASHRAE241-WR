@@ -1,7 +1,8 @@
 ASHRAE 241 Risk Model Simulation
 ================================
 
-This repository contains Python tools for running Monte Carlo simulations to estimate airborne infection risk in indoor environments using the ASHRAE Standard 241 framework. The models estimate infection risk as a function of equivalent clean airflow rates (ECAi), viral emission characteristics, occupant behavior, and space properties.
+This repository contains Python tools for running Monte Carlo simulations to estimate airborne infection risk in indoor environments using the ASHRAE Standard 241 framework. The model implemented here is based on the methodology reported by Jones et al. (2025) in *Building and Environment*, which estimates infection risk as a function of equivalent clean airflow rates (ECAi), viral emission characteristics, occupant behavior, and space properties. These tools reproduce and extend the simulations described in that publication.
+
 
 Features
 --------
@@ -28,6 +29,11 @@ To install dependencies:
 
 Program Overview
 ----------------
+
+**model.py**  
+- Contains the **core functions** and definitions for the simulation model, including occupancy parameters, random sampling of variables, and calculations of quanta emission rate (QER), infection probability, and equivalent clean airflow (ECAi).
+- All simulation scripts rely on this module to implement the methodology from the Jones et al. (2025) publication.
+
 
 **qer.py**  
 - Samples and plots the distributions of all parameters used in the Quanta Emission Rate (QER) calculation for a selected occupancy category.
@@ -68,6 +74,35 @@ Program Overview
 - This method answers:
   _“If I spend an hour in this location and there is at least one infected person present, what is the probability of catching the infection given the location is compliant with ASHRAE 241?”_
 - Results are printed in a table and saved to CSV.
+
+**singleProbability.py**  
+- Runs infection probability simulations for a **single occupancy category**.
+- Reports the 96th percentile infection probability and the percentage of simulations with zero infectors.
+- Optionally plots linear and log-scale histograms of the infection probability distribution.
+- Includes command-line options to specify occupancy category, number of simulations, community infection rate, ECAi override, and plot display.
+- For help on available options, run:
+    ```
+    python singleProbability.py --help
+    ```
+- *Example:*
+    ```
+    python singleProbability.py --category Classroom --N 10000 --show_plots
+    ```
+
+
+**mainGUI.py**  
+- Provides a **Tkinter-based desktop GUI** for running both ECAi and infection probability simulations.
+- Allows selection of calculation type, number of simulations, and whether to include zero-infector scenarios.
+- Displays results as horizontal bar plots comparing simulated values to ASHRAE 241 values.
+
+**streamlitGUI.py**  
+- Provides a **Streamlit web-based GUI** for interactive simulations.
+- Allows running ECAi or infection probability simulations across all occupancy categories.
+- Displays results with horizontal bar plots and log-scale options for infection probability.
+- To run:
+    ```
+    streamlit run streamlitGUI.py
+    ```
 
 Usage
 -----
