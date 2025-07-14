@@ -94,8 +94,8 @@ def run_simulation():
     if mode == "ECAi":
         ax.barh(y_pos + bar_width / 2, ashrae_vals, height=bar_width, label="ASHRAE 241", color="gray")
         for i, (v1, v2) in enumerate(zip(values, ashrae_vals)):
-            ax.text(v1 + 1, i - bar_width / 2, f"{v1:.1f}", va='center', fontsize=8)
-            ax.text(v2 + 1, i + bar_width / 2, f"{v2:.1f}", va='center', fontsize=8)
+            ax.text(v1 + 1, i - bar_width / 2, f"{int(v1)}", va='center', fontsize=8)
+            ax.text(v2 + 1, i + bar_width / 2, f"{int(v2)}", va='center', fontsize=8)
         ax.set_xlim(0, xmax)
     else:
         for i, v in enumerate(values):
@@ -111,7 +111,6 @@ def run_simulation():
     canvas.draw()
     progress["value"] = 100
     status_label.config(text="Calculation complete.")
-
 
 
 root = tk.Tk()
