@@ -89,7 +89,7 @@ def main():
         axs[0].grid(True, axis='y', linestyle='--', linewidth=0.5)
 
         # Plot: Log10-transformed data on linear scale
-        probabilities_nozero = probabilities[probabilities > 0.001]
+        probabilities_nozero = probabilities[probabilities > 0.000001]
         log_probs = np.log10(probabilities_nozero)
 
         axs[1].hist(log_probs, bins=100, color='steelblue', edgecolor='black')
