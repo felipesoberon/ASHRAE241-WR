@@ -79,25 +79,25 @@ def main():
     print(f"  Percentage of simulations with zero infectors: {zero_percent:.1f}%\n")
 
     if args.show_plots:
-        # Plot: Linear scale
-        plt.figure(figsize=(10, 5))
-        plt.hist(probabilities, bins=50, color='steelblue', edgecolor='black')
-        plt.xlabel('Infection Probability (%)')
-        plt.ylabel('Count')
-        plt.title(f'Probability Distribution (Linear Scale) - {category}')
-        plt.grid(True, axis='y', linestyle='--', linewidth=0.5)
-        plt.tight_layout()
-        plt.show()
+        fig, axs = plt.subplots(2, 1, figsize=(10, 10))
 
-        # Plot: Log scale
+        # Plot: Linear scale
+        axs[0].hist(probabilities, bins=1000, color='steelblue', edgecolor='black')
+        axs[0].set_xlabel('Infection Probability (%)')
+        axs[0].set_ylabel('Count')
+        axs[0].set_title(f'Probability Distribution (Linear Scale) - {category}')
+        axs[0].grid(True, axis='y', linestyle='--', linewidth=0.5)
+
+        # Plot: Log10-transformed data on linear scale
         probabilities_nozero = probabilities[probabilities > 0.001]
-        plt.figure(figsize=(10, 5))
-        plt.hist(probabilities_nozero, bins=50, color='steelblue', edgecolor='black', log=True)
-        plt.xscale('log')
-        plt.xlabel('Infection Probability (%) [log scale]')
-        plt.ylabel('Count (log scale)')
-        plt.title(f'Probability Distribution (Log Scale) - {category}')
-        plt.grid(True, axis='both', which='both', linestyle='--', linewidth=0.5)
+        log_probs = np.log10(probabilities_nozero)
+
+        axs[1].hist(log_probs, bins=100, color='steelblue', edgecolor='black')
+        axs[1].set_xlabel('log₁₀(Infection Probability [%])')
+        axs[1].set_ylabel('Count')
+        axs[1].set_title(f'Probability Distribution (Log10-Transformed) - {category}')
+        axs[1].grid(True, axis='y', linestyle='--', linewidth=0.5)
+
         plt.tight_layout()
         plt.show()
 
