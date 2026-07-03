@@ -46,6 +46,39 @@ Run from the project root:
 | `--percentiles`  | `50 75 96`                 | Percentiles for the table report.                  |
 | `--target`       | `0.1`                      | Target probability (%) for the threshold report.   |
 
+boxplot.py
+----------
+
+Draws a horizontal box-and-whisker plot of the raw probabilities, one box per
+occupancy category (categories on the y-axis, infection probability on a
+**log** x-axis). Boxes show the quartiles with a black median line and
+1.5x-IQR whiskers (outlier fliers suppressed for readability). Each category's
+96th percentile is marked with a red tick, along with a dashed reference line
+at the target probability.
+
+### Usage
+
+Run from the project root:
+
+    # Plot the default file (probabilityECAi_raw.npz)
+    python analysis/boxplot.py
+
+    # Plot a specific raw file
+    python analysis/boxplot.py run10k.npz
+
+    # Custom target line and save to a file instead of showing
+    python analysis/boxplot.py --target 0.05 --save boxplot.png
+
+### Options
+
+| Option      | Default                    | Description                                          |
+|-------------|----------------------------|------------------------------------------------------|
+| `infile`    | `probabilityECAi_raw.npz`  | Raw `.npz` file to plot (positional).                |
+| `--target`  | `0.1`                      | Target probability (%) drawn as a reference line.    |
+| `--xmin`    | `0.001`                    | Left edge of the log x-axis in % (clips lower tail). |
+| `--xmax`    | `100`                      | Right edge of the log x-axis in % (clips upper tail).|
+| `--save`    | *(show interactively)*     | Save the figure to this path instead of displaying.  |
+
 Generating the raw data
 -----------------------
 

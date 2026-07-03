@@ -128,7 +128,17 @@ The `analysis/` folder contains post-processing tools that operate on the raw
     ```
     python analysis/percentiles.py run1M.npz
     ```
-- See `analysis/README.md` for full options.
+
+**analysis/boxplot.py**
+- Draws a horizontal box-and-whisker plot of the raw probabilities (log x-axis),
+  one box per occupancy category, with each category's 96th percentile marked
+  and a dashed target line.
+- *Example:*
+    ```
+    python analysis/boxplot.py run1M.npz
+    ```
+
+See `analysis/README.md` for full options.
 
 Usage
 -----
