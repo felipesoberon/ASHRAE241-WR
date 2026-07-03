@@ -74,6 +74,15 @@ Program Overview
 - This method answers:
   _“If I spend an hour in this location and there is at least one infected person present, what is the probability of catching the infection given the location is compliant with ASHRAE 241?”_
 - Results are printed in a table and saved to CSV.
+- Optionally saves **every** raw simulation probability (not just the 96th percentile) to a compressed `.npz` file for later analysis (e.g. computing other percentiles or the mean without re-running the model).
+- *Options:*
+  - `N` (positional) — number of simulations per category (default 10000).
+  - `--save-all` — save all raw probabilities to a `.npz` file (one `float32` array per category, values 0–1).
+  - `--outfile` — name of the raw-data file (default `probabilityECAi_raw.npz`).
+- *Example:*
+    ```
+    python probabilityECAi.py 1000000 --save-all --outfile run1M.npz
+    ```
 
 **singleProbability.py**  
 - Runs infection probability simulations for a **single occupancy category**.
@@ -103,6 +112,23 @@ Program Overview
     ```
     streamlit run streamlitGUI.py
     ```
+
+Analysis
+--------
+
+The `analysis/` folder contains post-processing tools that operate on the raw
+`.npz` files saved by `probabilityECAi.py --save-all`.
+
+**analysis/percentiles.py**
+- Computes percentile statistics from a raw `.npz` file.
+- Produces a per-category percentile table and a coarse-to-fine threshold search
+  that finds the highest percentile at which all categories stay below a target
+  probability (default 0.1%).
+- *Example:*
+    ```
+    python analysis/percentiles.py run1M.npz
+    ```
+- See `analysis/README.md` for full options.
 
 Usage
 -----

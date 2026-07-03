@@ -5,6 +5,9 @@
 *.xlsb
 *.csv
 
+# Exclude raw simulation data
+*.npz
+
 # Exclude Python cache
 __pycache__/
 
