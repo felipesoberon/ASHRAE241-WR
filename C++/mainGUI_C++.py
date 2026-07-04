@@ -6,6 +6,8 @@ import subprocess
 import csv
 import os
 import threading
+import shlex
+import re
 import numpy as np
 
 # ---- C++ engine configuration ----
@@ -37,6 +39,60 @@ categories = [
     "Auditorium", "Place", "Museum", "Convention", "Spectator",
     "Lobbies", "Common", "Dwelling",
 ]
+
+
+# ---- WSL plumbing (auto-detected, not hardcoded) ----
+# These helpers only locate the distro and translate paths so the C++ engine
+# can be launched. They do not touch simulation arguments, flags, or results.
+
+_WSL_DISTRO = None
+_WSL_DISTRO_RESOLVED = False
+
+
+def default_wsl_distro():
+    """Return the default WSL distro (the one marked '*' by `wsl -l -v`),
+    skipping utility distros like docker-desktop. Returns None if detection
+    fails, in which case callers omit -d and let WSL use its own default.
+    Cached after the first lookup. wsl.exe emits UTF-16 output."""
+    global _WSL_DISTRO, _WSL_DISTRO_RESOLVED
+    if _WSL_DISTRO_RESOLVED:
+        return _WSL_DISTRO
+    _WSL_DISTRO_RESOLVED = True
+    distro = None
+    try:
+        out = subprocess.run(["wsl", "-l", "-v"], capture_output=True).stdout
+        text = out.decode("utf-16-le", "ignore")
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line.startswith("*"):                     # default distro row
+                m = re.search(r"[A-Za-z0-9._-]+", line[1:])
+                if m and "docker" not in m.group(0).lower():
+                    distro = m.group(0)
+                break
+    except Exception:
+        distro = None
+    _WSL_DISTRO = distro
+    return _WSL_DISTRO
+
+
+def _wsl_base():
+    """`wsl` command prefix, pinned to the detected distro when available."""
+    distro = default_wsl_distro()
+    return ["wsl", "-d", distro] if distro else ["wsl"]
+
+
+def to_wsl_path(win_path):
+    """Convert a Windows path to its WSL mount path via `wslpath` (handles any
+    drive letter and spaces); fall back to a C: string replace if wslpath fails."""
+    try:
+        out = subprocess.run(_wsl_base() + ["--", "wslpath", "-a", win_path],
+                             capture_output=True).stdout
+        p = out.decode("utf-8", "ignore").strip()
+        if p:
+            return p
+    except Exception:
+        pass
+    return win_path.replace("C:\\", "/mnt/c/").replace("\\", "/")
 
 
 def run_cpp_simulation(calculation_type, N, allow_zero_infector,
@@ -73,17 +129,26 @@ def run_cpp_simulation(calculation_type, N, allow_zero_infector,
             args.append(str(community_rate))
         csv_file = os.path.join(PROJECT_ROOT, "ecai_ashrae241_96th_percentile.csv")
 
-    # Convert Windows path to WSL path for the executable and cwd
-    # Windows: C:\Users\...\ASHRAE241-WR
-    # WSL:     /mnt/c/Users/.../ASHRAE241-WR
-    wsl_root = PROJECT_ROOT.replace("C:\\", "/mnt/c/").replace("\\", "/")
+    # Convert the Windows project path to its WSL path (handles any drive
+    # letter and spaces via wslpath) and locate the executable inside it.
+    wsl_root = to_wsl_path(PROJECT_ROOT)
     wsl_exe = wsl_root + "/" + exe_rel
+
+    # Fail early with a helpful message if the C++ engine has not been built.
+    check = subprocess.run(_wsl_base() + ["--", "test", "-x", wsl_exe])
+    if check.returncode != 0:
+        raise RuntimeError(
+            "C++ executable not found or not built: " + exe_rel + "\n"
+            "Build it in WSL first:\n"
+            "    cd " + wsl_root + "/C++ && cmake -B build && cmake --build build")
 
     # Run the C++ executable through WSL with line-buffered output
     # so we can read each category's result line as it's produced.
-    shell_cmd = "stdbuf -oL " + wsl_exe + " " + " ".join(args)
-    cmd = ["wsl", "-d", "Ubuntu-24.04", "--", "bash", "-c",
-           "cd " + wsl_root + " && " + shell_cmd]
+    # Quote the paths so directories containing spaces still work; the
+    # simulation arguments (args) are passed through unchanged.
+    shell_cmd = "stdbuf -oL " + shlex.quote(wsl_exe) + " " + " ".join(args)
+    cmd = _wsl_base() + ["--", "bash", "-c",
+                         "cd " + shlex.quote(wsl_root) + " && " + shell_cmd]
 
     total = len(categories)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,

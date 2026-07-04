@@ -257,3 +257,171 @@ Run: `cd C++ && python mainGUI_C++.py`
 1. Should the GUI offer to build the C++ executables if they're missing? Recommend: no — show an error message instead, pointing to the build instructions.
 
 2. Should the subprocess run in a background thread to avoid blocking? Recommend: start synchronous, add threading only if the user finds the blocking noticeable.
+
+---
+
+## Audit Findings (2026-07-04)
+
+Independent read-only audit of the committed GUI (`mainGUI_C++.py`) and the
+backward-compatible C++ engine flag additions (commit `5c887dd`), against the
+reference `mainGUI.py`. No code was changed during the audit.
+
+**Verdict: correct, calculation intact, and genuinely fast via C++.** The GUI
+faithfully mirrors `mainGUI.py`, the engine changes are backward-compatible, and
+the default calculation path is unchanged. The issues found are portability /
+deployment robustness concerns, not functional bugs.
+
+### Correctness — GUI is faithful to `mainGUI.py`
+
+- Flag mapping is semantically exact in both modes. As in the Python GUI,
+  `require_infectors = not "Allow Zero Infector"`:
+  - ECAi mode: checked -> no flag -> `require_infectors=false`; unchecked ->
+    `--require-infectors`.
+  - Probability mode: checked -> `--no-require-infectors`; unchecked -> default
+    `true`.
+- Community rate maps correctly: "Use ASHRAE CIR" checked -> no flag ->
+  per-category defaults (3% healthcare / 1% others); unchecked ->
+  `--community-rate <value>` applied to all categories. Matches the Python GUI's
+  `override_community_rate` behavior, including the shared quirk that entering `0`
+  falls back to the category default (`> 0` test in the model).
+- ECAi bar value = `ceil(p96/5)*5`, identical to the Python GUI and to the C++
+  `Rounded_Lps` column.
+- Window title/size/layout/controls/colors/log-scale/legend copied verbatim.
+- The threaded worker with `root.after` marshaling and real per-category progress
+  (parsing C++ stdout line-by-line via `stdbuf -oL`) is an improvement over the
+  blocking original and over this plan's "0 -> 100 only" fallback.
+
+### Calculation not impacted — confirmed
+
+- Engine math (`random_manager.cpp` inverse CDFs/LHS and the `model.cpp`
+  formulas) was not touched; the diff only added CLI arg-parsing and passed the
+  new params.
+- New defaults reproduce identical calls: `community_rate = -1` fails the `> 0`
+  test exactly as the old `0` did, and `require_infectors` defaults match the
+  previously hardcoded values.
+- Empirical: `ecai 20000` (no flags) -> 49.5% zero-infected, matching the
+  reference. `--community-rate 0.05` -> 21.8%, `0.005` -> 68.0% — sensible and
+  monotonic, confirming the flag propagates to the binomial draw.
+
+### Performance — genuinely fast, genuinely C++
+
+- Via the exact command the GUI issues: `ecai 10000` = 6.1 s,
+  `probability_ecai 10000` = 9.6 s (Python was 169 s / 300 s+ — ~20x). WSL launch
+  overhead is negligible; compute is CPU-bound in the ELF binary.
+- On-disk `C++/build` binaries already include the new flags (not stale);
+  Windows-side deps (tkinter 8.6, matplotlib 3.11, numpy 2.4) are present.
+
+### Risks / recommendations (not bugs)
+
+1. **Tightly coupled to this WSL setup.** The GUI hardcodes the distro name
+   `"Ubuntu-24.04"` and the `C:\ -> /mnt/c/` string replacement. Both work on the
+   current machine but break if the distro is renamed, the repo moves to another
+   drive, or the path contains spaces. See "De-hardcoding recommendation" below.
+   RESOLVED (see "Implementation status" below).
+2. **Depends on a pre-built `build/`, which is gitignored.** On a fresh clone or
+   another machine there are no binaries -> the GUI raises `RuntimeError`. It does
+   not auto-build or point to build instructions. Recommend catching the missing
+   executable case explicitly and showing a friendly message with the exact
+   `cmake` command (scoped out of the original plan, but cheap to add).
+   RESOLVED: the GUI now probes `test -x` and raises a message with the build
+   command if the executable is missing.
+3. **Overwrites CSVs in the project root** (`ecai_results.csv`,
+   `ecai_ashrae241_96th_percentile.csv`) on every run. Gitignored, but will
+   clobber any reference copies kept there. Recommend writing to a temp/output
+   dir and reading from there.
+4. **Plan self-contradiction (cosmetic).** Constraint #2 says "do not modify any
+   C++ source files," but the Resolution in Constraint #4 adds the flags. The
+   agent correctly followed the Resolution; note that C++ source was modified,
+   backward-compatibly.
+5. **Progress bar coupled to the table output format.** If the C++ print format
+   changes, the bar stops advancing (results still load correctly from the CSV).
+
+### De-hardcoding recommendation
+
+Replace the two hardcoded assumptions (distro name, `C:\ -> /mnt/c/` string
+replacement) with runtime detection. This keeps the GUI working if the distro is
+renamed, the repo lives on a non-C: drive, or the path has spaces.
+
+1. **Detect the default WSL distro instead of hardcoding `Ubuntu-24.04`.**
+   Query it once at startup and reuse it. Skip `docker-desktop`-style utility
+   distros. Note `wsl.exe` emits UTF-16LE, so decode accordingly:
+
+   ```python
+   def default_wsl_distro():
+       out = subprocess.run(["wsl", "-l", "-q"], capture_output=True).stdout
+       names = out.decode("utf-16-le", "ignore").replace("\r", "").split("\n")
+       names = [n.strip() for n in names if n.strip()]
+       for n in names:                       # prefer the first non-utility distro
+           if "docker" not in n.lower():
+               return n
+       return names[0] if names else "Ubuntu"
+   ```
+
+   Then build the command with `["wsl", "-d", distro, "--", ...]`, or simply omit
+   `-d` entirely to let WSL use its own configured default.
+
+2. **Convert the Windows path with `wslpath` instead of string replacement.**
+   This handles any drive letter and is the supported conversion tool:
+
+   ```python
+   def to_wsl_path(win_path, distro):
+       out = subprocess.run(["wsl", "-d", distro, "--", "wslpath", "-a", win_path],
+                            capture_output=True).stdout
+       return out.decode("utf-8", "ignore").strip()
+   ```
+
+3. **Handle spaces in paths** by not string-joining the command. Pass the exe and
+   args as a list and quote the `cd` target, e.g. build the bash payload with
+   `shlex.quote(wsl_root)` and `shlex.quote(wsl_exe)` rather than `" ".join(...)`.
+
+4. **Verify the executable exists before running** (covers risk #2). Probe with
+   `wsl -d <distro> -- test -x <wsl_exe>` (or check the Windows path) and, if
+   missing, show the build command instead of failing mid-run.
+
+These are localized changes to `run_cpp_simulation` only; the compute path, flag
+mapping, and chart code stay exactly as they are, so results are unaffected.
+
+### Implementation status (2026-07-04)
+
+The de-hardcoding recommendations above were implemented in `mainGUI_C++.py`.
+Changes were confined to the WSL/path plumbing; the simulation argument
+construction (the `--require-infectors` / `--no-require-infectors` /
+`--community-rate` flag logic), the CSV file paths and parsing, the progress
+parsing, and the chart code were left byte-for-byte unchanged — so calculations
+and simulation settings are unaffected.
+
+What was added:
+
+- `default_wsl_distro()` — detects the `*`-marked default distro from
+  `wsl -l -v` (decoded as UTF-16), skips `docker-desktop`, caches the result, and
+  returns `None` (callers then omit `-d`) if detection fails. The distro token is
+  extracted with an ASCII regex (`[A-Za-z0-9._-]+`), which also sidesteps any BOM
+  in the WSL output — no non-ASCII characters in the code.
+- `_wsl_base()` — builds the `wsl` command prefix, pinned to the detected distro
+  when available (`["wsl", "-d", distro]`), else `["wsl"]`.
+- `to_wsl_path()` — converts the Windows path via `wslpath -a` (any drive letter,
+  spaces), falling back to the old `C:\ -> /mnt/c/` replace only if `wslpath`
+  fails.
+- Executable pre-check in `run_cpp_simulation` via `test -x`, raising a
+  `RuntimeError` with the exact `cmake` build command when the engine is missing.
+- Paths quoted with `shlex.quote()` so a project directory containing spaces
+  still works.
+
+Verification:
+
+- `py_compile` clean; file contains no stray CR/BOM bytes; added code is pure
+  ASCII.
+- Helper checks live on this machine: `default_wsl_distro()` -> `Ubuntu-24.04`,
+  `to_wsl_path()` -> `/mnt/c/Users/.../ASHRAE241-WR`, `test -x` -> both
+  executables found.
+- End-to-end run of `run_cpp_simulation` (N=400) through the real C++ engine:
+  25 categories in Python insertion order, 25 per-category progress events,
+  custom `community_rate` + `--require-infectors` passed through correctly, both
+  ECAi and Infection Probability modes working.
+
+Remaining (not implemented, lower priority):
+
+- Risk #3 (CSVs written to the project root are overwritten each run) — still
+  as-is; move to a temp/output dir if it becomes a concern.
+- Risk #5 (progress bar coupled to the table output format) — unchanged; results
+  are still read from the CSV regardless.
