@@ -18,12 +18,22 @@ static const double LPS_TO_CFM = 2.11888;
 
 int main(int argc, char* argv[]) {
     int N = 10000;
-    if (argc > 1) {
-        N = std::atoi(argv[1]);
-        if (N < 1) {
-            printf("Invalid argument for number of simulations. Using default N = 10000.\n");
-            N = 10000;
+    bool require_infectors = false;  // default: match original behavior
+    double community_rate = -1;     // -1 = use category default
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--require-infectors") {
+            require_infectors = true;
+        } else if (arg == "--community-rate" && i + 1 < argc) {
+            community_rate = std::atof(argv[++i]);
+        } else if (arg[0] != '-') {
+            N = std::atoi(arg.c_str());
         }
+    }
+    if (N < 1) {
+        printf("Invalid argument for number of simulations. Using default N = 10000.\n");
+        N = 10000;
     }
 
     double target_P = 0.001;
@@ -56,7 +66,8 @@ int main(int argc, char* argv[]) {
 
         for (int i = 0; i < N; i++) {
             auto par = sample_parameters(rng, category);
-            auto [ecai_val, infected_flag] = compute_ECAi(par, target_P, rng, category);
+            auto [ecai_val, infected_flag] = compute_ECAi(par, target_P, rng, category,
+                require_infectors, community_rate);
             ECAi_list.push_back(ecai_val);
             if (infected_flag == 0) zero_infected_count++;
         }

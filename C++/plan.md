@@ -1164,24 +1164,37 @@ Fresh 100k C++ runs confirmed the residual differences are Monte Carlo noise, no
 bias: Manufacturing showed 13.5% at 100k but 2.0% at 1M — the expected small-N
 heavy-tail behavior of a statistically-equivalent (not bit-identical) port.
 
-### Deviations — all cosmetic, none affect computed values
+### Deviations from Python output — status
 
-1. **Output/CSV row order differs.** C++ uses `std::map`, so rows are emitted in
-   alphabetical order (Auditorium, Cell, Classroom, ...); Python preserves ASHRAE
-   insertion order (Cell, Dayroom, Food, ...). When diffing CSVs, join on the
-   Category column, not row position.
-2. **Raw-data format is `.bin`, not `.npz`** (intended per plan). C++ raw output
-   is not readable by the Python analysis scripts and vice-versa; each toolchain
-   reads only its own format.
-3. **`ecai` grand-total line reworded** ("Average Zero Infected across
-   categories: X%") vs Python's "Grand Total ... X of Y (Z%)". The percentage
-   value is equivalent.
-4. **`probability_ecai` CSV writes P96 at 3-decimal precision** vs Python's full
-   float precision (values agree; fewer digits stored).
+The audit flagged six cosmetic deviations (none ever affected computed values).
+Items 1, 3, 4 and 6 were **resolved in commit `ac70eb6`** ("fix: match Python
+output format exactly"). Items 2 and 5 remain as intended-by-design per the plan.
+The numeric engine (`random_manager.cpp` inverse CDFs/LHS and the formula bodies
+in `model.cpp`) was not touched by that commit; the fix only changed iteration
+order, container types, and print/CSV formatting. Post-fix: build clean, unit
+tests pass, and results still match the Python reference within Monte Carlo error.
+
+1. **Output/CSV row order.** RESOLVED. Was alphabetical (`std::map`); now uses a
+   `category_order` vector in Python/ASHRAE insertion order (Cell, Dayroom,
+   Food, ...). Simulation drivers and analysis tools iterate this order; the
+   `.bin` reader preserves file insertion order via an ordered `vector<pair>`.
+   Note: because the shared LHS stream is now consumed in a different order, exact
+   per-category values shift within Monte Carlo noise versus the old alphabetical
+   build — expected, and still statistically equivalent to Python.
+2. **Raw-data format is `.bin`, not `.npz`.** BY DESIGN (per plan). C++ raw
+   output is not readable by the Python analysis scripts and vice-versa; each
+   toolchain reads only its own format. A miniz-based `.npz` writer remains a
+   deferred optional task.
+3. **`ecai` grand-total line.** RESOLVED. Now prints Python's exact wording:
+   `Grand Total Simulations with Zero Infected: X of Y (Z %)`.
+4. **`probability_ecai` CSV P96 precision.** RESOLVED. Now writes full float
+   precision (`setprecision(15)`) to match Python's `csv.DictWriter`.
 5. **No plotting / GUIs** (`qer.py`, `distributions.py`, `--show_plots`,
-   Tkinter/Streamlit) — intentionally out of scope.
-6. `single_probability` omits the progress bar and prints ECAi as `20.00` vs
-   `20`. Cosmetic.
+   Tkinter/Streamlit). BY DESIGN — intentionally out of scope; matplotlib/UI only,
+   no effect on computation.
+6. **`single_probability` ECAi formatting.** RESOLVED. Now prints `20` (via `%g`)
+   instead of `20.00`. (The progress bar is still omitted — it has no bearing on
+   results.)
 
 ### Equivalence of use
 
@@ -1190,3 +1203,15 @@ CLI is compatible: same default `N=10000`, same `target_P=0.001`, same
 value of 0 means "use the category default"), faithfully preserved from Python.
 Analysis tools take the same flags; only the default input filename changes
 (`.bin` vs `.npz`).
+
+### Re-verification after cosmetic fixes (commit `ac70eb6`)
+
+- Clean rebuild; `test_random_manager` (18 checks) and `test_model` pass.
+- `ecai` / `probability_ecai` CSV row order now matches Python
+  (Cell, Dayroom, Food, ...); grand-total line and full-precision P96 column
+  confirmed.
+- C++ (fixed, 100k) vs Python 1M reference: probability-at-ECAi max 5.3% /
+  mean 2.0% relative — the expected 100k-vs-1M sampling spread, unchanged in
+  magnitude from the pre-fix comparison. Calculation confirmed not impacted.
+- No measurable speed impact: iterating a vector plus 25 `map.at()` lookups per
+  run and a one-time CSV write are all outside the Monte Carlo hot loop.

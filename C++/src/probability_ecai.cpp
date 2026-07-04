@@ -43,6 +43,8 @@ static void save_binary(const std::string& path,
 int main(int argc, char* argv[]) {
     int N = 10000;
     bool save_all = false;
+    bool require_infectors = true;   // default: match original behavior
+    double community_rate = -1;      // -1 = use category default
     std::string outfile = "probabilityECAi_raw.bin";
 
     for (int i = 1; i < argc; i++) {
@@ -51,6 +53,10 @@ int main(int argc, char* argv[]) {
             save_all = true;
         } else if (arg == "--outfile" && i + 1 < argc) {
             outfile = argv[++i];
+        } else if (arg == "--no-require-infectors") {
+            require_infectors = false;
+        } else if (arg == "--community-rate" && i + 1 < argc) {
+            community_rate = std::atof(argv[++i]);
         } else if (arg[0] != '-' && N == 10000) {
             // First positional = N
             N = std::atoi(arg.c_str());
@@ -78,7 +84,8 @@ int main(int argc, char* argv[]) {
 
         for (int i = 0; i < N; i++) {
             auto par = sample_parameters(rng, category);
-            auto [prob, _] = infection_probability(ECAi, par, rng, category, true, 0);
+            auto [prob, _] = infection_probability(ECAi, par, rng, category,
+                require_infectors, community_rate);
             probabilities.push_back(prob);
         }
 
