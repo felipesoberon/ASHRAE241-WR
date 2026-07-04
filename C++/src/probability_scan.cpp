@@ -14,12 +14,22 @@
 
 int main(int argc, char* argv[]) {
     int N = 10000;
-    if (argc > 1) {
-        N = std::atoi(argv[1]);
-        if (N < 1) {
-            printf("Invalid value for N, using default of 10000.\n");
-            N = 10000;
+    double general_rate = -1;        // -1 = use each category's default (1%)
+    double healthcare_rate = -1;     // -1 = use each category's default (3%)
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--community-rate-general" && i + 1 < argc) {
+            general_rate = std::atof(argv[++i]);
+        } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
+            healthcare_rate = std::atof(argv[++i]);
+        } else if (arg[0] != '-') {
+            N = std::atoi(arg.c_str());
         }
+    }
+    if (N < 1) {
+        printf("Invalid value for N, using default of 10000.\n");
+        N = 10000;
     }
 
     double target_prob = 0.001;
@@ -37,6 +47,9 @@ int main(int argc, char* argv[]) {
     std::vector<Row> results;
 
     for (const auto& category : category_order) {
+        // Resolve this category's community rate from the group overrides;
+        // -1 (unset) falls through to the category default (no impact).
+        double cr = is_healthcare_category(category) ? healthcare_rate : general_rate;
         bool found = false;
         for (int ECAi = 5; ECAi <= 100; ECAi += 5) {
             std::vector<double> probabilities;
@@ -44,7 +57,7 @@ int main(int argc, char* argv[]) {
             for (int i = 0; i < N; i++) {
                 auto par = sample_parameters(rng, category);
                 auto [prob, _f] = infection_probability(
-                    static_cast<double>(ECAi), par, rng, category, false, 0);
+                    static_cast<double>(ECAi), par, rng, category, false, cr);
                 probabilities.push_back(prob);
             }
             std::sort(probabilities.begin(), probabilities.end());

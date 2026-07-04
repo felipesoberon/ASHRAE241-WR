@@ -60,6 +60,13 @@ const OccupancyParams& get_occupancy_parameters(const std::string& category) {
     return it->second;
 }
 
+// Healthcare spaces are the group with the elevated 3% default community
+// infection rate; general spaces default to 1%. The 0.02 threshold cleanly
+// separates the two default values (0.01 vs 0.03).
+bool is_healthcare_category(const std::string& category) {
+    return get_occupancy_parameters(category).community_rate >= 0.02;
+}
+
 // --- sample_parameters ---
 SimParameters sample_parameters(RandomNumberManager& rng, const std::string& category) {
     const auto& occ = get_occupancy_parameters(category);

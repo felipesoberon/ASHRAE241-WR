@@ -96,7 +96,8 @@ def to_wsl_path(win_path):
 
 
 def run_cpp_simulation(calculation_type, N, allow_zero_infector,
-                       use_ashrae_cir, community_rate, progress_callback=None):
+                       use_ashrae_cir, general_rate, healthcare_rate,
+                       progress_callback=None):
     """Run the C++ simulation executable and return (results, ashrae_results).
 
     The C++ executables are Linux ELF binaries built in WSL, so they must be
@@ -116,8 +117,8 @@ def run_cpp_simulation(calculation_type, N, allow_zero_infector,
         if not allow_zero_infector:
             args.append("--require-infectors")
         if not use_ashrae_cir:
-            args.append("--community-rate")
-            args.append(str(community_rate))
+            args += ["--community-rate-general", str(general_rate),
+                     "--community-rate-healthcare", str(healthcare_rate)]
         csv_file = os.path.join(PROJECT_ROOT, "ecai_results.csv")
     else:
         exe_rel = "C++/build/probability_ecai"
@@ -125,8 +126,8 @@ def run_cpp_simulation(calculation_type, N, allow_zero_infector,
         if allow_zero_infector:
             args.append("--no-require-infectors")
         if not use_ashrae_cir:
-            args.append("--community-rate")
-            args.append(str(community_rate))
+            args += ["--community-rate-general", str(general_rate),
+                     "--community-rate-healthcare", str(healthcare_rate)]
         csv_file = os.path.join(PROJECT_ROOT, "ecai_ashrae241_96th_percentile.csv")
 
     # Convert the Windows project path to its WSL path (handles any drive
@@ -190,14 +191,21 @@ def run_cpp_simulation(calculation_type, N, allow_zero_infector,
 
 
 def generate_simulation_data(N=10000, mode="ECAi", progress_callback=None):
-    # Build flags from GUI state
+    # Build flags from GUI state. When not using the ASHRAE 241 defaults,
+    # the general (default 1%) and healthcare (default 3%) community infection
+    # rates are read separately from their entry fields.
     allow_zero = allow_zero_infector.get()
     use_ashrae = use_ashrae_cir.get()
-    comm_rate = float(community_rate_var.get()) if not use_ashrae else 0.01
+    if use_ashrae:
+        general_rate, healthcare_rate = 0.01, 0.03
+    else:
+        general_rate = float(community_rate_general_var.get())
+        healthcare_rate = float(community_rate_healthcare_var.get())
 
     # Run C++ simulation
     values, ashrae_vals = run_cpp_simulation(
-        mode, N, allow_zero, use_ashrae, comm_rate, progress_callback)
+        mode, N, allow_zero, use_ashrae, general_rate, healthcare_rate,
+        progress_callback)
 
     if mode == "ECAi":
         xmax = max(max(values), max(ashrae_vals), 50)
@@ -211,7 +219,9 @@ def generate_simulation_data(N=10000, mode="ECAi", progress_callback=None):
 def update_option_states(*args):
     use_ashrae_ecai.set(True)
     ashrae_ecai_check.state(["disabled", "selected"])
-    community_rate_entry.config(state="disabled" if use_ashrae_cir.get() else "normal")
+    entry_state = "disabled" if use_ashrae_cir.get() else "normal"
+    community_rate_general_entry.config(state=entry_state)
+    community_rate_healthcare_entry.config(state=entry_state)
 
 
 def run_simulation():
@@ -330,10 +340,15 @@ use_ashrae_cir = tk.BooleanVar(value=True)
 ashrae_cir_check = ttk.Checkbutton(left_frame, text="Use ASHRAE 241 Community Infection Rate", variable=use_ashrae_cir, command=update_option_states)
 ashrae_cir_check.pack(anchor="w", pady=(0, 5))
 
-ttk.Label(left_frame, text="Community Infection Rate (0–1):").pack(anchor="w")
-community_rate_var = tk.StringVar(value="0.01")
-community_rate_entry = ttk.Entry(left_frame, textvariable=community_rate_var, width=10)
-community_rate_entry.pack(anchor="w", pady=(0, 10))
+ttk.Label(left_frame, text="General spaces rate (0-1):").pack(anchor="w")
+community_rate_general_var = tk.StringVar(value="0.01")
+community_rate_general_entry = ttk.Entry(left_frame, textvariable=community_rate_general_var, width=10)
+community_rate_general_entry.pack(anchor="w", pady=(0, 5))
+
+ttk.Label(left_frame, text="Healthcare spaces rate (0-1):").pack(anchor="w")
+community_rate_healthcare_var = tk.StringVar(value="0.03")
+community_rate_healthcare_entry = ttk.Entry(left_frame, textvariable=community_rate_healthcare_var, width=10)
+community_rate_healthcare_entry.pack(anchor="w", pady=(0, 10))
 
 ttk.Label(left_frame, text="Number of Simulations (N):").pack(anchor="w")
 simulation_count_var = tk.StringVar(value="10000")

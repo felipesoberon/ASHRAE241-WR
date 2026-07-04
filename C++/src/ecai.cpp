@@ -19,14 +19,17 @@ static const double LPS_TO_CFM = 2.11888;
 int main(int argc, char* argv[]) {
     int N = 10000;
     bool require_infectors = false;  // default: match original behavior
-    double community_rate = -1;     // -1 = use category default
+    double general_rate = -1;        // -1 = use each category's default (1%)
+    double healthcare_rate = -1;     // -1 = use each category's default (3%)
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--require-infectors") {
             require_infectors = true;
-        } else if (arg == "--community-rate" && i + 1 < argc) {
-            community_rate = std::atof(argv[++i]);
+        } else if (arg == "--community-rate-general" && i + 1 < argc) {
+            general_rate = std::atof(argv[++i]);
+        } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
+            healthcare_rate = std::atof(argv[++i]);
         } else if (arg[0] != '-') {
             N = std::atoi(arg.c_str());
         }
@@ -64,10 +67,14 @@ int main(int argc, char* argv[]) {
         ECAi_list.reserve(N);
         int zero_infected_count = 0;
 
+        // Resolve this category's community rate from the group overrides;
+        // -1 (unset) falls through to the category default (no impact).
+        double cr = is_healthcare_category(category) ? healthcare_rate : general_rate;
+
         for (int i = 0; i < N; i++) {
             auto par = sample_parameters(rng, category);
             auto [ecai_val, infected_flag] = compute_ECAi(par, target_P, rng, category,
-                require_infectors, community_rate);
+                require_infectors, cr);
             ECAi_list.push_back(ecai_val);
             if (infected_flag == 0) zero_infected_count++;
         }

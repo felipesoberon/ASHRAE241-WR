@@ -27,6 +27,11 @@ extern const std::vector<std::string> category_order;
 
 const OccupancyParams& get_occupancy_parameters(const std::string& category);
 
+// Healthcare spaces are those with the elevated default community infection
+// rate (3%): Exam, Group, Patient, Resident, Waiting (per Jones et al. 2025).
+// General spaces default to 1%. Used to apply group-wide rate overrides.
+bool is_healthcare_category(const std::string& category);
+
 // Sampled simulation parameters
 struct SimParameters {
     double D;
