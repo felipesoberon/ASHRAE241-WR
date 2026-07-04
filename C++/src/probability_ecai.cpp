@@ -23,7 +23,7 @@
 //     uint32_t name_len, char[name_len] name, uint32_t count, double[count] values
 
 static void save_binary(const std::string& path,
-                        const std::map<std::string, std::vector<float>>& data) {
+                        const std::vector<std::pair<std::string, std::vector<float>>>& data) {
     std::ofstream out(path, std::ios::binary);
     uint32_t magic = 0x41534852;
     out.write(reinterpret_cast<char*>(&magic), sizeof(magic));
@@ -69,10 +69,10 @@ int main(int argc, char* argv[]) {
         std::string p96_str;
     };
     std::vector<Row> results;
-    std::map<std::string, std::vector<float>> raw_data;
+    std::vector<std::pair<std::string, std::vector<float>>> raw_data;
 
-    for (const auto& [category, params] : occupancy_params) {
-        double ECAi = params.ECAi;
+    for (const auto& category : category_order) {
+        double ECAi = occupancy_params.at(category).ECAi;
         std::vector<double> probabilities;
         probabilities.reserve(N);
 
@@ -92,14 +92,15 @@ int main(int argc, char* argv[]) {
         if (save_all) {
             std::vector<float> arr(N);
             for (int i = 0; i < N; i++) arr[i] = static_cast<float>(probabilities[i]);
-            raw_data[category] = std::move(arr);
+            raw_data.emplace_back(category, std::move(arr));
         }
 
         printf("| %-20s | %15.2f | %20.3f |\n", category.c_str(), ECAi, percentile_96);
 
         std::ostringstream oss_e, oss_p;
         oss_e << std::fixed << std::setprecision(2) << ECAi;
-        oss_p << std::fixed << std::setprecision(3) << percentile_96;
+        // Match Python csv.DictWriter: write full float precision for P_96th_percentile
+        oss_p << std::setprecision(15) << percentile_96;
         results.push_back({category, oss_e.str(), oss_p.str()});
     }
 

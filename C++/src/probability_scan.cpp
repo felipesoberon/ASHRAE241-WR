@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
     };
     std::vector<Row> results;
 
-    for (const auto& [category, _] : occupancy_params) {
+    for (const auto& category : category_order) {
         bool found = false;
         for (int ECAi = 5; ECAi <= 100; ECAi += 5) {
             std::vector<double> probabilities;

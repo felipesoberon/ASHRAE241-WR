@@ -11,12 +11,15 @@
 #include <cstring>
 #include <fstream>
 #include <string>
-#include <map>
+#include <utility>
 #include <cstdint>
 #include <cmath>
 #include <iomanip>
 
-static std::map<std::string, std::vector<double>> load_binary(const std::string& path) {
+// Ordered list of (category, values) — preserves file insertion order.
+using DataSet = std::vector<std::pair<std::string, std::vector<double>>>;
+
+static DataSet load_binary(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) { fprintf(stderr, "Cannot open %s\n", path.c_str()); exit(1); }
     uint32_t magic;
@@ -24,7 +27,7 @@ static std::map<std::string, std::vector<double>> load_binary(const std::string&
     if (magic != 0x41534852) { fprintf(stderr, "Bad magic\n"); exit(1); }
     uint32_t nc;
     in.read(reinterpret_cast<char*>(&nc), sizeof(nc));
-    std::map<std::string, std::vector<double>> data;
+    DataSet data;
     for (uint32_t i = 0; i < nc; i++) {
         uint32_t nl;
         in.read(reinterpret_cast<char*>(&nl), sizeof(nl));
@@ -34,7 +37,7 @@ static std::map<std::string, std::vector<double>> load_binary(const std::string&
         in.read(reinterpret_cast<char*>(&cnt), sizeof(cnt));
         std::vector<float> arr(cnt);
         in.read(reinterpret_cast<char*>(arr.data()), cnt * sizeof(float));
-        data[name] = std::vector<double>(arr.begin(), arr.end());
+        data.emplace_back(name, std::vector<double>(arr.begin(), arr.end()));
     }
     return data;
 }

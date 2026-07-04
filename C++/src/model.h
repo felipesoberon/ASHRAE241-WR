@@ -2,6 +2,7 @@
 #include "random_manager.h"
 #include <string>
 #include <map>
+#include <vector>
 #include <utility>
 
 // Occupancy parameters for each ASHRAE 241 category
@@ -20,6 +21,9 @@ struct OccupancyParams {
 };
 
 extern const std::map<std::string, OccupancyParams> occupancy_params;
+
+// Category names in Python insertion order (not alphabetical).
+extern const std::vector<std::string> category_order;
 
 const OccupancyParams& get_occupancy_parameters(const std::string& category);
 

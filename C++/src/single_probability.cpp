@@ -51,7 +51,7 @@ int main(int argc, char* argv[]) {
     if (it == occupancy_params.end()) {
         printf("Error: '%s' is not a valid category.\n", category.c_str());
         printf("Available categories:");
-        for (const auto& [k, _] : occupancy_params)
+        for (const auto& k : category_order)
             printf(" %s", k.c_str());
         printf("\n");
         return 1;
@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
 
     printf("\nSimulation results for category '%s':\n", category.c_str());
     printf("  Simulations: %d\n", N);
-    printf("  ECAi: %.2f L/s/person\n", ECAi);
+    printf("  ECAi: %g L/s/person\n", ECAi);
     if (use_default_comm) {
         printf("  Community infection rate: Default (%.4f)\n", it->second.community_rate);
     } else {

@@ -40,6 +40,15 @@ const std::map<std::string, OccupancyParams> occupancy_params = {
     {"Dwelling",      {0.51, 4.3, 40e4, 1.1, 2.2e-6, 1.1, 0.0,   6,   540,  0.01, 15}},
 };
 
+// Category names in Python insertion order (matches model.py lines 17-41).
+const std::vector<std::string> category_order = {
+    "Cell", "Dayroom", "Food", "Gym", "Office", "Retail", "Transportation",
+    "Classroom", "Lecture", "Manufacturing", "Sorting", "Warehouse",
+    "Exam", "Group", "Patient", "Resident", "Waiting",
+    "Auditorium", "Place", "Museum", "Convention", "Spectator",
+    "Lobbies", "Common", "Dwelling",
+};
+
 static const OccupancyParams default_params = {
     0.55, 1.2, 17e4, 1.1, 1.9e-6, 1.1, 0.0, 30, 320, 0.01, 0
 };

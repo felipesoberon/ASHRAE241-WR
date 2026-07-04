@@ -47,9 +47,9 @@ int main(int argc, char* argv[]) {
         double zero_infected_percent;
     };
     std::vector<Row> results;
-    double grand_zero_infected_percent_sum = 0;
+    int grand_zero_infected_count = 0;
 
-    for (const auto& [category, params] : occupancy_params) {
+    for (const auto& category : category_order) {
         std::vector<double> ECAi_list;
         ECAi_list.reserve(N);
         int zero_infected_count = 0;
@@ -83,14 +83,16 @@ int main(int argc, char* argv[]) {
         std::ostringstream oss;
         oss << std::fixed << std::setprecision(2) << percentile_96;
         results.push_back({category, oss.str(), rounded_lps, rounded_cfm, zero_infected_percent});
-        grand_zero_infected_percent_sum += zero_infected_percent;
+        grand_zero_infected_count += zero_infected_count;
     }
 
     printf("%s\n", line.c_str());
 
-    // Grand total
-    double grand_percent = grand_zero_infected_percent_sum / occupancy_params.size();
-    printf("\nAverage Zero Infected across categories: %.1f %%\n", grand_percent);
+    // Grand total — matches Python ecai.py format
+    int grand_total_simulations = static_cast<int>(category_order.size()) * N;
+    double grand_percent = 100.0 * grand_zero_infected_count / grand_total_simulations;
+    printf("\nGrand Total Simulations with Zero Infected: %d of %d (%.1f %%)\n",
+           grand_zero_infected_count, grand_total_simulations, grand_percent);
 
     // Write CSV
     std::string csv_filename = "ecai_results.csv";

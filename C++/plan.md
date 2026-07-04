@@ -1113,3 +1113,80 @@ git commit -m "docs: add C++ README with benchmarks and validation results"
 2. Should C++ support the same `--save-all` .npz format for interchange with Python analysis tools? Recommend: add later if needed via miniz.
 
 3. Build with MSVC or MinGW g++? Recommend: support both via CMake; test whichever is available on Felipe's machine first.
+
+---
+
+## Audit Findings (2026-07-04)
+
+Independent read-only audit of the completed C++ port against the frozen Python
+reference. The repository was not modified during the audit. Validation used the
+stored Python results at
+`C:\Users\felip\NOVAERUS\Standards Library - Documents\ASHRAE\241\09 Model\Results`
+(a 1,000,000-simulation reference run) plus the committed C++ 1M outputs
+(`ecai_results_cpp_1M.csv`, `probECAi_1M_cpp.csv`, `probECAi_1M_cpp.bin`). The
+slow Python runs were **not** re-executed.
+
+**Verdict: the port is faithful and correct.** The algorithms are implemented
+equivalently to Python, the plan was followed in full, and results at matched
+sample size agree to within Monte Carlo error. No functional bugs found.
+
+### Plan adherence
+
+All phases were implemented: CMake build, six inverse CDFs, LHS manager, all 25
+occupancy categories, the four core functions, four simulation executables, two
+analysis tools, three test suites. The Python model is untouched (the port
+commit only *adds* files under `C++/` plus one line in the root README).
+
+### Algorithm correctness
+
+| Component | Finding |
+|---|---|
+| Inverse CDFs (normal / beta / binomial / lognormal / log10normal) | Unit-tested vs known scipy values to 1e-8. Acklam + Halley (normal); incomplete-beta + bisection (beta). Pass. |
+| Occupancy parameters | All 25 categories x 11 fields identical to `model.py`. |
+| QER / infection_probability / compute_ECAi / sample_parameters | Formulas and draw order match Python exactly. |
+| LHS engine | Same stratification (linspace segments + shuffle), same refill-on-exhaust logic. |
+| Percentile method | `rank = q*(N-1)` linear interpolation — matches numpy default. |
+| Binomial inverse CDF | Zero-infector fractions match theoretical `(1-rate)^I0` to ~0.2%. |
+
+**Empirical validation at matched N = 1,000,000 (C++ 1M vs Python 1M reference):**
+
+- Probability at ECAi: max relative diff 1.41%, mean 0.60% across all 25
+  categories. Essentially exact.
+- Required ECAi: every category with a meaningful value (> 5 L/s/p) agrees within
+  3.6%. The only larger relative gaps — Warehouse (9.5%) and Patient (33.8%) —
+  are near-zero categories (81–91% zero-infector sims) where the absolute
+  difference is < 0.25 L/s/p and rounds identically.
+- Percentiles analysis tool: table matches the reference; the coarse-to-fine
+  threshold search returns the identical answer of 65th percentile with the same
+  bracket structure and worst-category sequence (Exam, then Dwelling).
+
+Fresh 100k C++ runs confirmed the residual differences are Monte Carlo noise, not
+bias: Manufacturing showed 13.5% at 100k but 2.0% at 1M — the expected small-N
+heavy-tail behavior of a statistically-equivalent (not bit-identical) port.
+
+### Deviations — all cosmetic, none affect computed values
+
+1. **Output/CSV row order differs.** C++ uses `std::map`, so rows are emitted in
+   alphabetical order (Auditorium, Cell, Classroom, ...); Python preserves ASHRAE
+   insertion order (Cell, Dayroom, Food, ...). When diffing CSVs, join on the
+   Category column, not row position.
+2. **Raw-data format is `.bin`, not `.npz`** (intended per plan). C++ raw output
+   is not readable by the Python analysis scripts and vice-versa; each toolchain
+   reads only its own format.
+3. **`ecai` grand-total line reworded** ("Average Zero Infected across
+   categories: X%") vs Python's "Grand Total ... X of Y (Z%)". The percentage
+   value is equivalent.
+4. **`probability_ecai` CSV writes P96 at 3-decimal precision** vs Python's full
+   float precision (values agree; fewer digits stored).
+5. **No plotting / GUIs** (`qer.py`, `distributions.py`, `--show_plots`,
+   Tkinter/Streamlit) — intentionally out of scope.
+6. `single_probability` omits the progress bar and prints ECAi as `20.00` vs
+   `20`. Cosmetic.
+
+### Equivalence of use
+
+CLI is compatible: same default `N=10000`, same `target_P=0.001`, same
+`require_infectors` semantics, and the same `override_community_rate` quirk (a
+value of 0 means "use the category default"), faithfully preserved from Python.
+Analysis tools take the same flags; only the default input filename changes
+(`.bin` vs `.npz`).
