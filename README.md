@@ -167,6 +167,15 @@ Simulation Details
 - **Performance:** Batch size for LHS buffers is configurable (default: 1,000,000).
 - **Sanity-checking:** Parameter distributions can be visualized with `qer.py` or `distributions.py`.
 
+C++ Port
+--------
+
+A high-performance C++17 port of this simulation is available in the `C++/`
+directory. It produces statistically equivalent results with a ~20x speedup
+over the Python implementation. Build instructions, benchmarks, and
+validation results are in `C++/README.md`.
+
+
 Reference
 ---------
 

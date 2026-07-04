@@ -7,9 +7,13 @@
 
 # Exclude raw simulation data
 *.npz
+*.bin
 
 # Exclude Python cache
 __pycache__/
+
+# Exclude C++ build artifacts
+C++/build/
 
 # Exclude documentation and archive folders
 DOC/
