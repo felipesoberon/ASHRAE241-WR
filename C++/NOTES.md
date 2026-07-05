@@ -65,3 +65,6 @@ They read the C++ .bin format via bin_reader.py:
   boxplot_bin.py       Matplotlib box-and-whisker on log scale, reads .bin
   summary_table.py     Summary table with compliance grouping (A/B/C)
   inputs_reader.py     Reads --save-inputs .bin format (count x 21 arrays)
+  exceed_vs_nonexceed.py  Exceed vs non-exceed input comparison + tornado plot
+  correlation_analysis.py  Spearman correlation between inputs and P
+  parameter_scan.py    Univariate sensitivity scan per parameter

@@ -210,6 +210,75 @@ Field order (21 doubles per simulation):
 
     python analysis/inputs_reader.py probECAi_inputs.bin
 
+Driver analysis scripts
+-----------------------
+
+These scripts read the --save-inputs format to identify which input
+parameters drive the high-probability tail.
+
+exceed_vs_nonexceed.py
+-----------------------
+
+Splits simulations into exceed (P > 0.1%) and non-exceed (P <= 0.1%)
+groups per category. For each input parameter, computes the mean in
+each group and the ratio (exceed/non-exceed). Produces a tornado plot
+and CSV. Parameters with the largest ratio are the tail drivers.
+
+### Usage
+
+    python analysis/exceed_vs_nonexceed.py probECAi_inputs.bin --csv results.csv --save tornado.png
+
+    # Single category:
+    python analysis/exceed_vs_nonexceed.py probECAi_inputs.bin --category Classroom
+
+### Options
+
+| Option       | Default                    | Description                                    |
+|--------------|----------------------------|------------------------------------------------|
+| `infile`     | `probabilityECAi_inputs.bin` | Inputs .bin file (positional).              |
+| `--target`   | `0.1`                      | Target probability (%) for the split.          |
+| `--csv`      | *(none)*                   | Write results to this CSV file.               |
+| `--save`     | *(none)*                   | Save tornado plot to this file.               |
+| `--category` | *(all)*                    | Only analyze this category.                   |
+
+correlation_analysis.py
+-----------------------
+
+Computes Spearman rank correlation between each input parameter and
+infection probability P. Produces a correlation heatmap (categories
+x parameters) and CSV.
+
+### Usage
+
+    python analysis/correlation_analysis.py probECAi_inputs.bin --csv corr.csv --save heatmap.png
+
+### Options
+
+| Option   | Default                    | Description                                    |
+|----------|----------------------------|------------------------------------------------|
+| `infile` | `probabilityECAi_inputs.bin` | Inputs .bin file (positional).              |
+| `--csv`  | *(none)*                   | Write correlation table to CSV.               |
+| `--save` | *(none)*                   | Save heatmap to this file.                    |
+
+parameter_scan.py
+-----------------
+
+Univariate sensitivity scan: bins P by each parameter value and
+computes the median P per bin, showing the marginal effect of each
+parameter on infection probability. Produces a multi-panel figure.
+
+### Usage
+
+    python analysis/parameter_scan.py probECAi_inputs.bin --category Classroom --save scan.png
+
+### Options
+
+| Option       | Default                    | Description                                    |
+|--------------|----------------------------|------------------------------------------------|
+| `infile`     | `probabilityECAi_inputs.bin` | Inputs .bin file (positional).              |
+| `--category` | `Classroom`                | Category to analyze.                          |
+| `--save`     | *(none)*                   | Save figure to this file.                    |
+
 Generating the raw data
 -----------------------
 

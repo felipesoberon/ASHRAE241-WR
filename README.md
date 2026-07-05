@@ -202,6 +202,31 @@ scripts read the C++ `.bin` format produced by `C++/build/probability_ecai
     python analysis/inputs_reader.py probECAi_inputs.bin
     ```
 
+**analysis/exceed_vs_nonexceed.py**
+- Driver analysis: splits simulations into exceed (P > 0.1%) and
+  non-exceed (P <= 0.1%) groups, compares input parameter means
+  between groups. Produces a tornado plot and CSV.
+- *Example:*
+    ```
+    python analysis/exceed_vs_nonexceed.py probECAi_inputs.bin --csv results.csv --save tornado.png
+    ```
+
+**analysis/correlation_analysis.py**
+- Computes Spearman rank correlation between each input parameter
+  and infection probability P. Produces a correlation heatmap and CSV.
+- *Example:*
+    ```
+    python analysis/correlation_analysis.py probECAi_inputs.bin --csv corr.csv --save heatmap.png
+    ```
+
+**analysis/parameter_scan.py**
+- Univariate sensitivity scan: bins P by each parameter and computes
+  median P per bin, showing the marginal effect of each parameter.
+- *Example:*
+    ```
+    python analysis/parameter_scan.py probECAi_inputs.bin --category Classroom --save scan.png
+    ```
+
 See `analysis/README.md` for full options.
 
 Usage
