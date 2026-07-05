@@ -35,9 +35,17 @@ ECAi simulation (compute required ECAi at 0.1% target):
 Infection probability at ASHRAE 241 ECAi values:
 
     ./build/probability_ecai [N] [--save-all] [--outfile FILE]
+                             [--save-inputs] [--inputs-file FILE]
                              [--no-require-infectors]
                              [--community-rate-general RATE]
                              [--community-rate-healthcare RATE]
+
+The --save-inputs flag writes per-simulation input parameters (21 fields
+per simulation: sampled PBR, lambda_bio, gamma, n_infected, phi, QER_sum,
+mask_factor, Q, P, and 12 QER component values) to a separate binary file
+for driver/sensitivity analysis. The RNG call sequence is identical with
+or without --save-inputs, so the computed probabilities are unchanged.
+Use analysis/inputs_reader.py to read this file in Python.
 
 Scan for minimum ECAi:
 
@@ -109,8 +117,10 @@ Architecture
 
   src/random_manager.{h,cpp}  LHS engine + inverse CDFs
   src/model.{h,cpp}           Occupancy params + QER/infection/ECAi
+                             + QER_with_inputs / infection_probability_with_inputs
   src/ecai.cpp               ECAi simulation script
   src/probability_ecai.cpp   Probability at ASHRAE ECAi values
+                             (+ --save-inputs for driver analysis)
   src/probability_scan.cpp   ECAi threshold scan
   src/single_probability.cpp Single-category analysis
   analysis/percentiles.cpp   Percentile table + threshold search
@@ -129,3 +139,25 @@ C++ uses a simple binary format (not .npz):
                 float[count] values (raw probability 0-1)
 
 The C++ analysis tools (percentiles, boxplot) read this format.
+Python analysis scripts use analysis/bin_reader.py to read it.
+
+Binary inputs format (--save-inputs)
+-------------------------------------
+
+Per-simulation input parameters for driver/sensitivity analysis:
+
+  uint32_t magic = 0x494E5054 ("INPT")
+  uint32_t num_categories
+  Per category: uint32_t name_len, char[] name, uint32_t count,
+                double[count * 21] values (21 fields per simulation)
+
+Field order (21 doubles per simulation):
+  0: PBR_sample    1: lambda_bio    2: gamma
+  3: n_infected    4: phi           5: QER_sum
+  6: mask_factor   7: Q             8: P
+  9: qer.PBR_qer  10: qer.C_drop   11: qer.d
+ 12: qer.E        13: qer.Vdrop    14: qer.GVL_ml
+ 15: qer.GVL_m3   16: qer.VF       17: qer.RTD
+ 18: qer.DK       19: qer.VER     20: qer.QER_val
+
+Use analysis/inputs_reader.py to read this file in Python.

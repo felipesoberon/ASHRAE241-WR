@@ -38,3 +38,30 @@ Key design decisions
 - GUI (mainGUI_C++.py): Windows Python/Tkinter driving the C++ ELF engine via
   WSL. The WSL distro is auto-detected and paths are converted with wslpath, so
   it is not tied to a specific distro name or drive letter.
+- Driver analysis (--save-inputs):
+    * probability_ecai --save-inputs writes per-simulation input parameters
+      (21 fields: PBR, lambda_bio, gamma, n_infected, phi, QER_sum,
+      mask_factor, Q, P, and 12 QER component values) to a binary file.
+    * Implemented via QER_with_inputs() and infection_probability_with_inputs()
+      -- new functions that mirror the originals exactly (same RNG call
+      sequence, same formulas) but also return intermediate values.
+    * The original QER() and infection_probability() are untouched; when
+      --save-inputs is absent, the original code path runs unchanged.
+    * Verified: QER_sum == qer_QER_val for n_infected=1 (diff = 0),
+      P == 1 - exp(-Q) (diff = 1.11e-16), P96 from inputs file matches
+      terminal output.
+
+Python analysis scripts (analysis/ folder)
+------------------------------------------
+
+The following scripts were added to support the presentation analysis plan.
+They read the C++ .bin format via bin_reader.py:
+
+  bin_reader.py        Reads --save-all .bin format (numpy arrays)
+  exceedance.py        Exceedance fraction table (mean, median, P96, % sims
+                       > 0.1/0.5/1.0%)
+  ccdf_plot.py         Complementary CDF (exceedance curve) plot
+  percentile_heatmap.py 25x11 percentile heatmap with 0.1% contour
+  boxplot_bin.py       Matplotlib box-and-whisker on log scale, reads .bin
+  summary_table.py     Summary table with compliance grouping (A/B/C)
+  inputs_reader.py     Reads --save-inputs .bin format (count x 21 arrays)

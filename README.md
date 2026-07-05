@@ -116,26 +116,90 @@ Program Overview
 Analysis
 --------
 
-The `analysis/` folder contains post-processing tools that operate on the raw
-`.npz` files saved by `probabilityECAi.py --save-all`.
+The `analysis/` folder contains post-processing tools that operate on the
+raw simulation data. Python scripts `percentiles.py` and `boxplot.py` read
+the `.npz` format produced by `probabilityECAi.py --save-all`. The remaining
+scripts read the C++ `.bin` format produced by `C++/build/probability_ecai
+--save-all` via the `bin_reader.py` utility.
 
 **analysis/percentiles.py**
 - Computes percentile statistics from a raw `.npz` file.
-- Produces a per-category percentile table and a coarse-to-fine threshold search
-  that finds the highest percentile at which all categories stay below a target
-  probability (default 0.1%).
+- Produces a per-category percentile table and a coarse-to-fine threshold
+  search that finds the highest percentile at which all categories stay
+  below a target probability (default 0.1%).
 - *Example:*
     ```
     python analysis/percentiles.py run1M.npz
     ```
 
 **analysis/boxplot.py**
-- Draws a horizontal box-and-whisker plot of the raw probabilities (log x-axis),
-  one box per occupancy category, with each category's 96th percentile marked
-  and a dashed target line.
+- Draws a horizontal box-and-whisker plot of the raw probabilities (log
+  x-axis), one box per occupancy category, with each category's 96th
+  percentile marked and a dashed target line.
+- Reads `.npz` format.
 - *Example:*
     ```
     python analysis/boxplot.py run1M.npz
+    ```
+
+**analysis/bin_reader.py**
+- Utility that reads the C++ binary raw-data format (`.bin`) produced by
+  `C++/build/probability_ecai --save-all`. Returns a dict of numpy arrays.
+- Used by all C++-format analysis scripts below.
+- *Example:*
+    ```
+    python analysis/bin_reader.py probECAi_1M_cpp.bin
+    ```
+
+**analysis/boxplot_bin.py**
+- Same as `boxplot.py` but reads the C++ `.bin` format directly.
+- *Example:*
+    ```
+    python analysis/boxplot_bin.py probECAi_1M_cpp.bin --save boxplot.png
+    ```
+
+**analysis/exceedance.py**
+- Computes exceedance fractions from raw C++ `.bin` data: for each category,
+  reports mean, median, 96th percentile, and the fraction of simulations
+  exceeding 0.1%, 0.5%, and 1.0% targets.
+- Optionally writes results to CSV.
+- *Example:*
+    ```
+    python analysis/exceedance.py probECAi_1M_cpp.bin --csv results.csv
+    ```
+
+**analysis/ccdf_plot.py**
+- Plots complementary CDF (exceedance curves) from raw C++ `.bin` data.
+- One curve per category on a log x-axis, with the 0.1% target line.
+- *Example:*
+    ```
+    python analysis/ccdf_plot.py probECAi_1M_cpp.bin --save ccdf.png
+    ```
+
+**analysis/percentile_heatmap.py**
+- Draws a 25x11 percentile heatmap (categories x percentiles) from raw C++
+  `.bin` data, color-coded by infection probability with a 0.1% contour.
+- *Example:*
+    ```
+    python analysis/percentile_heatmap.py probECAi_1M_cpp.bin --save heatmap.png
+    ```
+
+**analysis/summary_table.py**
+- Produces a comprehensive summary table from raw C++ `.bin` data: median,
+  P75, P90, P96, P99, exceedance fraction, and compliance group (A/B/C)
+  per category.
+- *Example:*
+    ```
+    python analysis/summary_table.py probECAi_1M_cpp.bin --csv summary.csv
+    ```
+
+**analysis/inputs_reader.py**
+- Reads the C++ `--save-inputs` binary format (per-simulation input
+  parameters for driver/sensitivity analysis). Returns a dict of 2D
+  numpy arrays (count x 21 fields).
+- *Example:*
+    ```
+    python analysis/inputs_reader.py probECAi_inputs.bin
     ```
 
 See `analysis/README.md` for full options.

@@ -9,6 +9,9 @@
 *.npz
 *.bin
 
+# Exclude analysis output (figures, tables)
+*.png
+
 # Exclude Python cache
 __pycache__/
 

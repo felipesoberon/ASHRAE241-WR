@@ -100,6 +100,43 @@ double QER(RandomNumberManager& rng, const std::string& category) {
     return RTD * VER / DK;
 }
 
+// --- QER_with_inputs ---
+// Same computation as QER(), but also returns the sampled values.
+// The RNG call sequence is identical to QER().
+std::pair<double, QERInputs> QER_with_inputs(
+    RandomNumberManager& rng, const std::string& category)
+{
+    const auto& occ = get_occupancy_parameters(category);
+    double PBR    = random_lognormal_lhs(rng, std::log(occ.PBR_GM),  std::log(occ.PBR_GSD));
+    double C_drop = random_lognormal_lhs(rng, std::log(occ.Cdrop_GM), std::log(occ.Cdrop_GSD));
+    double d      = random_lognormal_lhs(rng, std::log(occ.d_GM),     std::log(occ.d_GSD));
+    double E      = random_beta_lhs(rng, 5.0, 2.0, 2.0, 3.0);
+    double Vdrop  = (PI / 6.0) * std::pow(d * E, 3) * C_drop;
+    double GVL_ml = random_log10normal_lhs(rng, 7.0, 1.4);
+    double GVL_m3 = GVL_ml * 1e6;
+    double VF     = random_beta_lhs(rng, 5.0, 2.0, 1e-4, (1e-2 - 1e-4));
+    double RD = 1;
+    double RTD = random_uniform_lhs(rng, 0.43, 0.65);
+    double DK  = random_uniform_lhs(rng, 5.0, 15.0);
+    double VER = PBR * Vdrop * GVL_m3 * VF * RD;
+    double QER_val = RTD * VER / DK;
+
+    QERInputs qi;
+    qi.PBR_qer = PBR;
+    qi.C_drop  = C_drop;
+    qi.d       = d;
+    qi.E       = E;
+    qi.Vdrop   = Vdrop;
+    qi.GVL_ml  = GVL_ml;
+    qi.GVL_m3  = GVL_m3;
+    qi.VF      = VF;
+    qi.RTD     = RTD;
+    qi.DK      = DK;
+    qi.VER     = VER;
+    qi.QER_val = QER_val;
+    return {QER_val, qi};
+}
+
 // --- infection_probability ---
 std::pair<double, int> infection_probability(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
@@ -129,6 +166,60 @@ std::pair<double, int> infection_probability(
     }
 
     return {P, infected_flag};
+}
+
+// --- infection_probability_with_inputs ---
+// Same computation as infection_probability(), but also returns
+// intermediate values for driver analysis. The RNG call sequence is
+// identical to infection_probability().
+InfectionResultWithInputs infection_probability_with_inputs(
+    double ECAi, const SimParameters& par, RandomNumberManager& rng,
+    const std::string& category, bool require_infectors,
+    double override_community_rate)
+{
+    double TECAi = ECAi * par.I0 * 3.6;
+    double phi = par.gamma + par.lambda_bio + TECAi / par.VOL;
+    double comm_rate = (override_community_rate > 0) ? override_community_rate : par.community_rate;
+
+    int n_infected = random_binomial_lhs(rng, par.I0, comm_rate);
+    if (require_infectors) {
+        while (n_infected == 0)
+            n_infected = random_binomial_lhs(rng, par.I0, comm_rate);
+    }
+
+    int infected_flag = (n_infected > 0) ? 1 : 0;
+    double P = 0.0;
+    double QER_sum = 0.0;
+    double mask_factor = 0.0;
+    double Q = 0.0;
+    QERInputs qer_first{};
+    qer_first.QER_val = 0;
+
+    if (n_infected > 0) {
+        for (int i = 0; i < n_infected; i++) {
+            if (i == 0) {
+                auto [val, qi] = QER_with_inputs(rng, category);
+                QER_sum += val;
+                qer_first = qi;
+            } else {
+                QER_sum += QER(rng, category);
+            }
+        }
+        mask_factor = std::pow(1.0 - par.mask_efficiency, 2);
+        Q = (par.PBR * par.D * mask_factor / (phi * par.VOL)) * QER_sum;
+        P = 1.0 - std::exp(-Q);
+    }
+
+    SimInputs si;
+    si.n_infected   = n_infected;
+    si.phi          = phi;
+    si.QER_sum      = QER_sum;
+    si.mask_factor  = mask_factor;
+    si.Q            = Q;
+    si.P            = P;
+    si.qer_first     = qer_first;
+
+    return {P, infected_flag, si};
 }
 
 // --- compute_ECAi ---
