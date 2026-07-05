@@ -282,11 +282,11 @@ parameter on infection probability. Produces a multi-panel figure.
 Generating the raw data
 -----------------------
 
-From the project root (Python):
+From the `Python/` directory:
 
     python probabilityECAi.py 1000000 --save-all --outfile run1M.npz
 
-From WSL (C++):
+From the repository root via WSL (C++):
 
     ./C++/build/probability_ecai 1000000 --save-all \
         --outfile probECAi_1M.bin

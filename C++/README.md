@@ -45,7 +45,7 @@ per simulation: sampled PBR, lambda_bio, gamma, n_infected, phi, QER_sum,
 mask_factor, Q, P, and 12 QER component values) to a separate binary file
 for driver/sensitivity analysis. The RNG call sequence is identical with
 or without --save-inputs, so the computed probabilities are unchanged.
-Use analysis/inputs_reader.py to read this file in Python.
+Use Python/analysis/inputs_reader.py to read this file in Python.
 
 Scan for minimum ECAi:
 
@@ -139,7 +139,7 @@ C++ uses a simple binary format (not .npz):
                 float[count] values (raw probability 0-1)
 
 The C++ analysis tools (percentiles, boxplot) read this format.
-Python analysis scripts use analysis/bin_reader.py to read it.
+Python analysis scripts use Python/analysis/bin_reader.py to read it.
 
 Binary inputs format (--save-inputs)
 -------------------------------------
@@ -160,4 +160,4 @@ Field order (21 doubles per simulation):
  15: qer.GVL_m3   16: qer.VF       17: qer.RTD
  18: qer.DK       19: qer.VER     20: qer.QER_val
 
-Use analysis/inputs_reader.py to read this file in Python.
+Use Python/analysis/inputs_reader.py to read this file in Python.

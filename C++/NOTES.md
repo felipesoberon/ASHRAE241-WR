@@ -51,8 +51,8 @@ Key design decisions
       P == 1 - exp(-Q) (diff = 1.11e-16), P96 from inputs file matches
       terminal output.
 
-Python analysis scripts (analysis/ folder)
-------------------------------------------
+Python analysis scripts (Python/analysis/ folder)
+-------------------------------------------------
 
 The following scripts were added to support the presentation analysis plan.
 They read the C++ .bin format via bin_reader.py:
