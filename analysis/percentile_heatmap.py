@@ -67,34 +67,44 @@ def main():
         for j, p in enumerate(percentiles):
             matrix[i, j] = np.percentile(vals, p)
 
+    from matplotlib.colors import LogNorm
+
+    # Log-scaled color map: values span orders of magnitude.
+    # Floor at 0.001% to avoid log(0).
+    vmin = max(matrix.min(), 0.001)
+    vmax = max(matrix.max(), vmin * 10)
+    log_mid = 0.5 * (np.log10(vmin) + np.log10(vmax))
+
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    # Log-scaled color map: values span orders of magnitude
-    # Use LogNorm with a floor to avoid log(0)
-    from matplotlib.colors import LogNorm
-    vmin = max(matrix.min(), 0.001)  # floor at 0.001%
-    vmax = max(matrix.max(), vmin * 10)
-    im = ax.pcolormesh(matrix.T, cmap="RdYlGn_r",
-                       norm=LogNorm(vmin=vmin, vmax=vmax),
-                       shading="auto")
+    # imshow with origin="upper" puts row 0 (best/lowest-P96 category)
+    # at the TOP of the figure. Cell centers fall on integer
+    # coordinates (row=i, col=j), so ax.text(j, i, ...), tick
+    # positions, and ax.contour(matrix, ...) all share one grid.
+    im = ax.imshow(matrix, origin="upper", aspect="auto",
+                   cmap="RdYlGn_r", norm=LogNorm(vmin=vmin, vmax=vmax))
 
-    # Contour at the target -- uses the same matrix.T orientation
-    # as pcolormesh so the contour aligns with the cells
-    cs = ax.contour(matrix.T, levels=[args.target],
+    # Target contour on the SAME un-transposed matrix and grid.
+    cs = ax.contour(matrix, levels=[args.target],
                     colors="black", linewidths=2.0)
-    ax.clabel(cs, fmt="%g%% target", fontsize=8,
-              inline=True)
+    ax.clabel(cs, fmt="%g%% target", fontsize=8, inline=True)
 
-    # Annotate each cell with the value
+    # Annotate each cell with the value.
+    # Format adapts to magnitude: <1 shows 3 decimals, 1-10 shows 2,
+    # >=10 shows 1 -- so large values like 14.878 stay readable.
     for i in range(n_cats):
         for j in range(n_pcts):
             val = matrix[i, j]
-            # Choose text color based on cell color intensity:
-            # dark red cells get white text, light green cells get black
+            if val < 1.0:
+                s = f"{val:.3f}"
+            elif val < 10.0:
+                s = f"{val:.2f}"
+            else:
+                s = f"{val:.1f}"
+            # White text on dark (high-value/red) cells, black on light
             log_val = np.log10(max(val, vmin))
-            log_mid = 0.5 * (np.log10(vmin) + np.log10(vmax))
             text_color = "white" if log_val > log_mid else "black"
-            ax.text(j, i, f"{val:.3f}", ha="center", va="center",
+            ax.text(j, i, s, ha="center", va="center",
                     fontsize=6, color=text_color)
 
     ax.set_yticks(np.arange(n_cats))
