@@ -78,16 +78,10 @@ def main():
                        norm=LogNorm(vmin=vmin, vmax=vmax),
                        shading="auto")
 
-    # Contour at the target
-    pct_labels = [str(p) for p in percentiles]
-    # Draw contour line at target value
-    X, Y = np.meshgrid(np.arange(n_pcts + 1), np.arange(n_cats + 1))
-    # matrix is (cats x pcts), pcolormesh transposes, so contour
-    # needs the same orientation
+    # Contour at the target -- uses the same matrix.T orientation
+    # as pcolormesh so the contour aligns with the cells
     cs = ax.contour(matrix.T, levels=[args.target],
-                    colors="black", linewidths=2.0,
-                    extent=(-0.5, n_pcts - 0.5,
-                            -0.5, n_cats - 0.5))
+                    colors="black", linewidths=2.0)
     ax.clabel(cs, fmt="%g%% target", fontsize=8,
               inline=True)
 
@@ -95,15 +89,18 @@ def main():
     for i in range(n_cats):
         for j in range(n_pcts):
             val = matrix[i, j]
-            # White text on dark cells, black on light
-            text_color = "white" if val > vmax * 0.3 or val < vmin * 3 \
-                else "black"
+            # Choose text color based on cell color intensity:
+            # dark red cells get white text, light green cells get black
+            log_val = np.log10(max(val, vmin))
+            log_mid = 0.5 * (np.log10(vmin) + np.log10(vmax))
+            text_color = "white" if log_val > log_mid else "black"
             ax.text(j, i, f"{val:.3f}", ha="center", va="center",
                     fontsize=6, color=text_color)
 
     ax.set_yticks(np.arange(n_cats))
     ax.set_yticklabels(cats_sorted, fontsize=9)
     ax.set_xticks(np.arange(n_pcts))
+    pct_labels = [str(p) for p in percentiles]
     ax.set_xticklabels(pct_labels, fontsize=9)
     ax.set_xlabel("Percentile")
     ax.set_ylabel("Category (sorted by P96, best at top)")
