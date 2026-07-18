@@ -119,6 +119,8 @@ def run_cpp_simulation(calculation_type, N, allow_zero_infector,
         if not use_ashrae_cir:
             args += ["--community-rate-general", str(general_rate),
                      "--community-rate-healthcare", str(healthcare_rate)]
+        if use_fitted_qer:
+            args.append("--use-fitted-qer")
         csv_file = os.path.join(PROJECT_ROOT, "ecai_results.csv")
     else:
         exe_rel = "C++/build/probability_ecai"

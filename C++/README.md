@@ -41,13 +41,11 @@ Infection probability at ASHRAE 241 ECAi values:
                              [--community-rate-healthcare RATE]
                              [--use-fitted-qer]
 
-The --use-fitted-qer flag replaces the 8-parameter QER_i calculation
-(Eqs. 3-5, Jones et al. 2025) with a single draw from a fitted log10-normal
-distribution per category. The fitted parameters are stored in
-src/qer_fitted.cpp and were derived from 1,000,000 simulations per category
-of the full Jones et al. model. This gives a ~15-25x speedup with results
-within 0-2% of the full method. Without the flag, the default is the full
-Jones et al. calculation (unchanged behaviour).
+The --use-fitted-qer flag is accepted by all simulation executables that
+calculate QER_i: ecai, probability_ecai, probability_scan, and
+single_probability. It replaces the full 8-parameter QER_i calculation with
+a category-specific fitted log10-normal draw. Without the flag, all programs
+use the original Jones et al. method by default.
 
 The --save-inputs flag writes per-simulation input parameters (21 fields
 per simulation: sampled PBR, lambda_bio, gamma, n_infected, phi, QER_sum,

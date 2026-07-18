@@ -14,12 +14,15 @@
 
 int main(int argc, char* argv[]) {
     int N = 10000;
+    bool use_fitted_qer = false;
     double general_rate = -1;        // -1 = use each category's default (1%)
     double healthcare_rate = -1;     // -1 = use each category's default (3%)
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--community-rate-general" && i + 1 < argc) {
+        if (arg == "--use-fitted-qer") {
+            use_fitted_qer = true;
+        } else if (arg == "--community-rate-general" && i + 1 < argc) {
             general_rate = std::atof(argv[++i]);
         } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
             healthcare_rate = std::atof(argv[++i]);
@@ -57,7 +60,8 @@ int main(int argc, char* argv[]) {
             for (int i = 0; i < N; i++) {
                 auto par = sample_parameters(rng, category);
                 auto [prob, _f] = infection_probability(
-                    static_cast<double>(ECAi), par, rng, category, false, cr);
+                    static_cast<double>(ECAi), par, rng, category, false, cr,
+                    use_fitted_qer);
                 probabilities.push_back(prob);
             }
             std::sort(probabilities.begin(), probabilities.end());

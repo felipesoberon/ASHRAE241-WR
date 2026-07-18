@@ -18,6 +18,7 @@ int main(int argc, char* argv[]) {
     std::string category = "Classroom";
     double community_rate = -1;  // -1 means use default
     bool allow_zero_infectors = true;
+    bool use_fitted_qer = false;
     double ecai_override = -1;   // -1 means use default from params
 
     for (int i = 1; i < argc; i++) {
@@ -32,6 +33,8 @@ int main(int argc, char* argv[]) {
             ecai_override = std::atof(argv[++i]);
         } else if (arg == "--no_zero_infectors") {
             allow_zero_infectors = false;
+        } else if (arg == "--use-fitted-qer") {
+            use_fitted_qer = true;
         } else if (arg == "--show_plots") {
             // Ignored — no plotting in C++
         } else if (arg == "--help" || arg == "-h") {
@@ -41,6 +44,7 @@ int main(int argc, char* argv[]) {
             printf("  --community_rate <f> Community infection rate 0-1 (default: from params)\n");
             printf("  --ecai <float>       ECAi in L/s/person (default: from params)\n");
             printf("  --no_zero_infectors  Disallow zero infector simulations\n");
+            printf("  --use-fitted-qer     Use fitted log10-normal QER_i distribution\n");
             return 0;
         }
     }
@@ -70,7 +74,8 @@ int main(int argc, char* argv[]) {
         auto par = sample_parameters(rng, category);
         double cr = use_default_comm ? 0 : comm_rate;
         auto [prob, infected_flag] = infection_probability(
-            ECAi, par, rng, category, !allow_zero_infectors, cr);
+            ECAi, par, rng, category, !allow_zero_infectors, cr,
+            use_fitted_qer);
         probabilities.push_back(prob);
         if (infected_flag == 0) zero_infectors_count++;
     }
