@@ -49,7 +49,9 @@ int main(int argc, char* argv[]) {
             printf("  --community_rate <f> Community infection rate 0-1 (default: from params)\n");
             printf("  --ecai <float>       ECAi in L/s/person (default: from params)\n");
             printf("  --no_zero_infectors  Disallow zero infector simulations\n");
-            printf("  --qer-distribution   jones, fitted, or mikszewski (default jones)\n");
+            printf("  --qer-distribution   jones, jones-fitted, or one of the 30\n");
+            printf("                        mikszewski-<organism>-<activity> profiles\n");
+            printf("                        (default jones)\n");
             printf("  --use-fitted-qer     Alias for --qer-distribution fitted\n");
             return 0;
         }
