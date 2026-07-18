@@ -39,7 +39,7 @@ Infection probability at ASHRAE 241 ECAi values:
                              [--no-require-infectors]
                              [--community-rate-general RATE]
                              [--community-rate-healthcare RATE]
-                             [--qer-distribution jones|jones-fitted|mikszewski]
+                             [--qer-distribution PROFILE]
                              [--use-fitted-qer]
 
 The `--qer-distribution` option is accepted by all simulation executables that
@@ -49,11 +49,19 @@ calculate QER_i: `ecai`, `probability_ecai`, `probability_scan`, and
 - `jones` (default): the full eight-parameter Jones et al. calculation.
 - `jones-fitted`: category-specific fitted log10-normal distributions derived
   from the Jones model.
-- `mikszewski`: the universal SARS-CoV-2 standing/speaking distribution from
-  Mikszewski et al. (2022), Table 2, with median 2.7 quanta/h and
-  sigma_log10 = 1.2.
+- `mikszewski-<organism>-<activity>`: all 30 organism/activity profiles from
+  Mikszewski et al. (2022), Tables 1 and 2. The organisms are SARS-CoV-1, MERS,
+  TB on treatment, influenza, coxsackievirus, rhinovirus, SARS-CoV-2, TB
+  untreated, adenovirus, and measles. Activities are resting, standing-speaking,
+  and light-speaking-loudly.
+
+For example: `mikszewski-sars-cov-2-standing-speaking`,
+`mikszewski-measles-light-speaking-loudly`, or
+`mikszewski-tb-untreated-resting`.
 
 The legacy `--use-fitted-qer` flag remains an alias for `jones-fitted`.
+The previous generic `mikszewski` selector remains accepted as an alias for
+`mikszewski-sars-cov-2-standing-speaking`.
 All downstream dose, infection-probability, and ECAi calculations are shared
 between the options.
 

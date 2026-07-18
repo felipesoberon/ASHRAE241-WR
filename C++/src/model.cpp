@@ -88,10 +88,10 @@ SimParameters sample_parameters(RandomNumberManager& rng, const std::string& cat
 // When use_fitted=true: draw from fitted log10-normal distribution
 double QER(RandomNumberManager& rng, const std::string& category,
            QERDistribution distribution) {
-    if (distribution == QERDistribution::JonesFitted)
+    if (distribution.kind == QERDistributionKind::JonesFitted)
         return QER_fitted(rng, category);
-    if (distribution == QERDistribution::Mikszewski)
-        return QER_mikszewski(rng);
+    if (distribution.kind == QERDistributionKind::Mikszewski)
+        return QER_mikszewski(rng, distribution.profile);
     const auto& occ = get_occupancy_parameters(category);
     double PBR    = random_lognormal_lhs(rng, std::log(occ.PBR_GM),  std::log(occ.PBR_GSD));
     double C_drop = random_lognormal_lhs(rng, std::log(occ.Cdrop_GM), std::log(occ.Cdrop_GSD));
@@ -110,8 +110,8 @@ double QER(RandomNumberManager& rng, const std::string& category,
 
 double QER(RandomNumberManager& rng, const std::string& category,
            bool use_fitted) {
-    return QER(rng, category, use_fitted
-        ? QERDistribution::JonesFitted : QERDistribution::Jones);
+    return QER(rng, category, {use_fitted
+        ? QERDistributionKind::JonesFitted : QERDistributionKind::Jones, {}});
 }
 
 // --- QER_with_inputs ---
@@ -121,9 +121,10 @@ std::pair<double, QERInputs> QER_with_inputs(
     RandomNumberManager& rng, const std::string& category,
     QERDistribution distribution)
 {
-    if (distribution != QERDistribution::Jones) {
-        double val = (distribution == QERDistribution::Mikszewski)
-            ? QER_mikszewski(rng) : QER_fitted(rng, category);
+    if (distribution.kind != QERDistributionKind::Jones) {
+        double val = (distribution.kind == QERDistributionKind::Mikszewski)
+            ? QER_mikszewski(rng, distribution.profile)
+            : QER_fitted(rng, category);
         QERInputs qi{};  // zero-initialized
         qi.QER_val = val;
         return {val, qi};

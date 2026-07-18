@@ -87,21 +87,29 @@ int main() {
     }
 
     // ---- Distribution selector and Mikszewski option ----
-    QERDistribution parsed = QERDistribution::Jones;
-    if (!parse_qer_distribution("mikszewski", parsed) ||
-        parsed != QERDistribution::Mikszewski) {
-        printf("FAIL: Mikszewski distribution name did not parse\n");
+    QERDistribution parsed{};
+    if (!parse_qer_distribution("mikszewski-sars-cov-2-standing-speaking", parsed) ||
+        parsed.kind != QERDistributionKind::Mikszewski ||
+        parsed.profile != "mikszewski-sars-cov-2-standing-speaking") {
+        printf("FAIL: Mikszewski profile did not parse\n");
+        failures++;
+    }
+    if (mikszewski_distribution_names().size() != 30) {
+        printf("FAIL: expected 30 Mikszewski profiles\n");
         failures++;
     }
     if (std::abs(mikszewski_qer_params.mu_log10 - std::log10(2.7)) > 1e-12 ||
         std::abs(mikszewski_qer_params.sigma_log10 - 1.2) > 1e-12) {
-        printf("FAIL: Mikszewski parameters are incorrect\n");
+        printf("FAIL: Mikszewski SARS-CoV-2 parameters are incorrect\n");
         failures++;
     }
-    double q_mik = QER_mikszewski(rng);
-    if (q_mik <= 0 || !std::isfinite(q_mik)) {
-        printf("FAIL: QER_mikszewski() = %f\n", q_mik);
-        failures++;
+    for (const auto& profile : mikszewski_distribution_names()) {
+        double q_mik = QER_mikszewski(rng, profile);
+        if (q_mik <= 0 || !std::isfinite(q_mik)) {
+            printf("FAIL: invalid sample for profile %s\n", profile.c_str());
+            failures++;
+            break;
+        }
     }
 
     // ---- QER_fitted via QER(use_fitted=true) ----

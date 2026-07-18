@@ -18,7 +18,7 @@ int main(int argc, char* argv[]) {
     std::string category = "Classroom";
     double community_rate = -1;  // -1 means use default
     bool allow_zero_infectors = true;
-    QERDistribution qer_distribution = QERDistribution::Jones;
+    QERDistribution qer_distribution{};
     double ecai_override = -1;   // -1 means use default from params
 
     for (int i = 1; i < argc; i++) {
@@ -34,10 +34,10 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--no_zero_infectors") {
             allow_zero_infectors = false;
         } else if (arg == "--use-fitted-qer") {
-            qer_distribution = QERDistribution::JonesFitted;
+            qer_distribution = {QERDistributionKind::JonesFitted, {}};
         } else if (arg == "--qer-distribution" && i + 1 < argc) {
             if (!parse_qer_distribution(argv[++i], qer_distribution)) {
-                fprintf(stderr, "Unknown QER distribution. Use jones, fitted, or mikszewski.\n");
+                fprintf(stderr, "Unknown QER distribution. See README for valid profile names.\n");
                 return 2;
             }
         } else if (arg == "--show_plots") {

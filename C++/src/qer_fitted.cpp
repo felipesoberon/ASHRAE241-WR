@@ -64,11 +64,52 @@ double QER_fitted(RandomNumberManager& rng, const std::string& category) {
     return qer_from_params(rng, get_qer_fitted_params(category));
 }
 
-// Mikszewski et al. (2022), Table 2, SARS-CoV-2 standing/speaking.
-// The equivalent natural-log form is lognormal(ln(2.7), 1.2*ln(10)).
+// Mikszewski et al. (2022), Table 2 and Table 1. Each profile uses
+// mu_log10 = log10(Table 2 median) and the organism-specific sigma_log10
+// from Table 1.
+const std::map<std::string, QERFittedParams> mikszewski_params = {
+    {"mikszewski-sars-cov-1-resting",              {std::log10(0.0084), 1.30}},
+    {"mikszewski-sars-cov-1-standing-speaking",   {std::log10(0.042),  1.30}},
+    {"mikszewski-sars-cov-1-light-speaking-loudly",{std::log10(0.71),  1.30}},
+    {"mikszewski-mers-resting",                   {std::log10(0.011),  1.60}},
+    {"mikszewski-mers-standing-speaking",        {std::log10(0.056),  1.60}},
+    {"mikszewski-mers-light-speaking-loudly",     {std::log10(0.96),  1.60}},
+    {"mikszewski-tb-on-treatment-resting",        {std::log10(0.020),  1.40}},
+    {"mikszewski-tb-on-treatment-standing-speaking", {std::log10(0.098), 1.40}},
+    {"mikszewski-tb-on-treatment-light-speaking-loudly", {std::log10(1.7), 1.40}},
+    {"mikszewski-influenza-resting",              {std::log10(0.035), 0.84}},
+    {"mikszewski-influenza-standing-speaking",    {std::log10(0.17),  0.84}},
+    {"mikszewski-influenza-light-speaking-loudly",{std::log10(3.0),   0.84}},
+    {"mikszewski-coxsackievirus-resting",         {std::log10(0.062), 1.10}},
+    {"mikszewski-coxsackievirus-standing-speaking", {std::log10(0.31), 1.10}},
+    {"mikszewski-coxsackievirus-light-speaking-loudly", {std::log10(5.2), 1.10}},
+    {"mikszewski-rhinovirus-resting",             {std::log10(0.21),  0.83}},
+    {"mikszewski-rhinovirus-standing-speaking",   {std::log10(1.0),   0.83}},
+    {"mikszewski-rhinovirus-light-speaking-loudly",{std::log10(18.0), 0.83}},
+    {"mikszewski-sars-cov-2-resting",             {std::log10(0.55),  1.20}},
+    {"mikszewski-sars-cov-2-standing-speaking",   {std::log10(2.7),   1.20}},
+    {"mikszewski-sars-cov-2-light-speaking-loudly",{std::log10(46.0), 1.20}},
+    {"mikszewski-tb-untreated-resting",           {std::log10(0.62),  1.30}},
+    {"mikszewski-tb-untreated-standing-speaking",{std::log10(3.1),   1.30}},
+    {"mikszewski-tb-untreated-light-speaking-loudly", {std::log10(52.0), 1.30}},
+    {"mikszewski-adenovirus-resting",             {std::log10(0.78),  0.95}},
+    {"mikszewski-adenovirus-standing-speaking",   {std::log10(3.9),   0.95}},
+    {"mikszewski-adenovirus-light-speaking-loudly",{std::log10(66.0), 0.95}},
+    {"mikszewski-measles-resting",                {std::log10(3.1),   1.60}},
+    {"mikszewski-measles-standing-speaking",      {std::log10(15.0),  1.60}},
+    {"mikszewski-measles-light-speaking-loudly",  {std::log10(260.0), 1.60}},
+};
+
 const QERFittedParams mikszewski_qer_params = {
     std::log10(2.7), 1.2
 };
+
+double QER_mikszewski(RandomNumberManager& rng, const std::string& profile) {
+    auto it = mikszewski_params.find(profile);
+    if (it == mikszewski_params.end())
+        throw std::invalid_argument("Unknown Mikszewski QER profile: " + profile);
+    return qer_from_params(rng, it->second);
+}
 
 double QER_mikszewski(RandomNumberManager& rng) {
     return qer_from_params(rng, mikszewski_qer_params);

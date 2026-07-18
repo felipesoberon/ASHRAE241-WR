@@ -38,3 +38,4 @@ double QER_fitted(RandomNumberManager& rng, const std::string& category);
 // Parameters: median 2.7 quanta/h, sigma_log10 = 1.2.
 extern const QERFittedParams mikszewski_qer_params;
 double QER_mikszewski(RandomNumberManager& rng);
+double QER_mikszewski(RandomNumberManager& rng, const std::string& profile);

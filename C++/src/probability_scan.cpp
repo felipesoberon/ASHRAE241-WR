@@ -14,17 +14,17 @@
 
 int main(int argc, char* argv[]) {
     int N = 10000;
-    QERDistribution qer_distribution = QERDistribution::Jones;
+    QERDistribution qer_distribution{};
     double general_rate = -1;        // -1 = use each category's default (1%)
     double healthcare_rate = -1;     // -1 = use each category's default (3%)
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--use-fitted-qer") {
-            qer_distribution = QERDistribution::JonesFitted;
+            qer_distribution = {QERDistributionKind::JonesFitted, {}};
         } else if (arg == "--qer-distribution" && i + 1 < argc) {
             if (!parse_qer_distribution(argv[++i], qer_distribution)) {
-                fprintf(stderr, "Unknown QER distribution. Use jones, fitted, or mikszewski.\n");
+                fprintf(stderr, "Unknown QER distribution. See README for valid profile names.\n");
                 return 2;
             }
         } else if (arg == "--community-rate-general" && i + 1 < argc) {

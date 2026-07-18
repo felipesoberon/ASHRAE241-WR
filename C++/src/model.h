@@ -49,7 +49,7 @@ SimParameters sample_parameters(RandomNumberManager& rng, const std::string& cat
 
 // QER calculation. The default is the full Jones et al. method.
 double QER(RandomNumberManager& rng, const std::string& category,
-           QERDistribution distribution = QERDistribution::Jones);
+           QERDistribution distribution = {});
 // Backward-compatible overload: true selects JonesFitted, false selects Jones.
 double QER(RandomNumberManager& rng, const std::string& category,
            bool use_fitted);
@@ -71,14 +71,14 @@ struct QERInputs {
 };
 std::pair<double, QERInputs> QER_with_inputs(
     RandomNumberManager& rng, const std::string& category,
-    QERDistribution distribution = QERDistribution::Jones);
+    QERDistribution distribution = {});
 
 // Returns {probability, infected_flag}
 std::pair<double, int> infection_probability(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
     double override_community_rate = 0,
-    QERDistribution distribution = QERDistribution::Jones);
+    QERDistribution distribution = {});
 
 // Infection probability with inputs: returns {probability, flag,
 // intermediate values for driver analysis}
@@ -102,11 +102,11 @@ InfectionResultWithInputs infection_probability_with_inputs(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
     double override_community_rate = 0,
-    QERDistribution distribution = QERDistribution::Jones);
+    QERDistribution distribution = {});
 
 // Returns {ECAi_value, infected_flag}
 std::pair<double, int> compute_ECAi(
     const SimParameters& par, double target_P, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
     double override_community_rate = 0,
-    QERDistribution distribution = QERDistribution::Jones);
+    QERDistribution distribution = {});

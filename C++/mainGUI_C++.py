@@ -353,13 +353,47 @@ community_rate_healthcare_entry = ttk.Entry(left_frame, textvariable=community_r
 community_rate_healthcare_entry.pack(anchor="w", pady=(0, 10))
 
 ttk.Label(left_frame, text="QER_i distribution:").pack(anchor="w")
+QER_DISTRIBUTIONS = [
+    "jones",
+    "jones-fitted",
+    "mikszewski-sars-cov-1-resting",
+    "mikszewski-sars-cov-1-standing-speaking",
+    "mikszewski-sars-cov-1-light-speaking-loudly",
+    "mikszewski-mers-resting",
+    "mikszewski-mers-standing-speaking",
+    "mikszewski-mers-light-speaking-loudly",
+    "mikszewski-tb-on-treatment-resting",
+    "mikszewski-tb-on-treatment-standing-speaking",
+    "mikszewski-tb-on-treatment-light-speaking-loudly",
+    "mikszewski-influenza-resting",
+    "mikszewski-influenza-standing-speaking",
+    "mikszewski-influenza-light-speaking-loudly",
+    "mikszewski-coxsackievirus-resting",
+    "mikszewski-coxsackievirus-standing-speaking",
+    "mikszewski-coxsackievirus-light-speaking-loudly",
+    "mikszewski-rhinovirus-resting",
+    "mikszewski-rhinovirus-standing-speaking",
+    "mikszewski-rhinovirus-light-speaking-loudly",
+    "mikszewski-sars-cov-2-resting",
+    "mikszewski-sars-cov-2-standing-speaking",
+    "mikszewski-sars-cov-2-light-speaking-loudly",
+    "mikszewski-tb-untreated-resting",
+    "mikszewski-tb-untreated-standing-speaking",
+    "mikszewski-tb-untreated-light-speaking-loudly",
+    "mikszewski-adenovirus-resting",
+    "mikszewski-adenovirus-standing-speaking",
+    "mikszewski-adenovirus-light-speaking-loudly",
+    "mikszewski-measles-resting",
+    "mikszewski-measles-standing-speaking",
+    "mikszewski-measles-light-speaking-loudly",
+]
 qer_distribution_var = tk.StringVar(value="jones")
 qer_distribution_combo = ttk.Combobox(
     left_frame,
     textvariable=qer_distribution_var,
-    values=["jones", "jones-fitted", "mikszewski"],
+    values=QER_DISTRIBUTIONS,
     state="readonly",
-    width=24,
+    width=46,
 )
 qer_distribution_combo.pack(anchor="w", pady=(0, 10))
 
