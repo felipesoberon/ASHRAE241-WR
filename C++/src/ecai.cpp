@@ -19,7 +19,7 @@ static const double LPS_TO_CFM = 2.11888;
 int main(int argc, char* argv[]) {
     int N = 10000;
     bool require_infectors = false;  // default: match original behavior
-    bool use_fitted_qer = false;     // default: full Jones et al. calculation
+    QERDistribution qer_distribution = QERDistribution::Jones;
     double general_rate = -1;        // -1 = use each category's default (1%)
     double healthcare_rate = -1;     // -1 = use each category's default (3%)
 
@@ -28,7 +28,12 @@ int main(int argc, char* argv[]) {
         if (arg == "--require-infectors") {
             require_infectors = true;
         } else if (arg == "--use-fitted-qer") {
-            use_fitted_qer = true;
+            qer_distribution = QERDistribution::JonesFitted;
+        } else if (arg == "--qer-distribution" && i + 1 < argc) {
+            if (!parse_qer_distribution(argv[++i], qer_distribution)) {
+                fprintf(stderr, "Unknown QER distribution. Use jones, fitted, or mikszewski.\n");
+                return 2;
+            }
         } else if (arg == "--community-rate-general" && i + 1 < argc) {
             general_rate = std::atof(argv[++i]);
         } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
@@ -77,7 +82,7 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < N; i++) {
             auto par = sample_parameters(rng, category);
             auto [ecai_val, infected_flag] = compute_ECAi(par, target_P, rng, category,
-                require_infectors, cr, use_fitted_qer);
+                require_infectors, cr, qer_distribution);
             ECAi_list.push_back(ecai_val);
             if (infected_flag == 0) zero_infected_count++;
         }

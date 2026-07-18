@@ -15,6 +15,7 @@ add_library(ashrae241 STATIC
     src/random_manager.cpp
     src/model.cpp
     src/qer_fitted.cpp
+    src/qer_distribution.cpp
 )
 target_include_directories(ashrae241 PUBLIC src)
 

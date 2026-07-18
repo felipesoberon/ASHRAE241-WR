@@ -86,6 +86,24 @@ int main() {
         failures++;
     }
 
+    // ---- Distribution selector and Mikszewski option ----
+    QERDistribution parsed = QERDistribution::Jones;
+    if (!parse_qer_distribution("mikszewski", parsed) ||
+        parsed != QERDistribution::Mikszewski) {
+        printf("FAIL: Mikszewski distribution name did not parse\n");
+        failures++;
+    }
+    if (std::abs(mikszewski_qer_params.mu_log10 - std::log10(2.7)) > 1e-12 ||
+        std::abs(mikszewski_qer_params.sigma_log10 - 1.2) > 1e-12) {
+        printf("FAIL: Mikszewski parameters are incorrect\n");
+        failures++;
+    }
+    double q_mik = QER_mikszewski(rng);
+    if (q_mik <= 0 || !std::isfinite(q_mik)) {
+        printf("FAIL: QER_mikszewski() = %f\n", q_mik);
+        failures++;
+    }
+
     // ---- QER_fitted via QER(use_fitted=true) ----
     // Verify QER with use_fitted=true produces valid values
     double q2 = QER(rng, "Exam", true);

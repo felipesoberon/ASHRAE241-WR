@@ -1,5 +1,6 @@
 #pragma once
 #include "random_manager.h"
+#include "qer_distribution.h"
 #include <string>
 #include <map>
 #include <vector>
@@ -46,12 +47,12 @@ struct SimParameters {
 
 SimParameters sample_parameters(RandomNumberManager& rng, const std::string& category);
 
-// QER calculation. When use_fitted=false (default), uses the full
-// 8-parameter Jones et al. (2025) calculation (Eqs. 3-5).
-// When use_fitted=true, draws from the fitted log10-normal distribution
-// for the given category (see qer_fitted.h).
+// QER calculation. The default is the full Jones et al. method.
 double QER(RandomNumberManager& rng, const std::string& category,
-           bool use_fitted = false);
+           QERDistribution distribution = QERDistribution::Jones);
+// Backward-compatible overload: true selects JonesFitted, false selects Jones.
+double QER(RandomNumberManager& rng, const std::string& category,
+           bool use_fitted);
 
 // QER with inputs: returns {QER_value, sampled parameter values}
 struct QERInputs {
@@ -70,13 +71,14 @@ struct QERInputs {
 };
 std::pair<double, QERInputs> QER_with_inputs(
     RandomNumberManager& rng, const std::string& category,
-    bool use_fitted = false);
+    QERDistribution distribution = QERDistribution::Jones);
 
 // Returns {probability, infected_flag}
 std::pair<double, int> infection_probability(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0, bool use_fitted_qer = false);
+    double override_community_rate = 0,
+    QERDistribution distribution = QERDistribution::Jones);
 
 // Infection probability with inputs: returns {probability, flag,
 // intermediate values for driver analysis}
@@ -99,10 +101,12 @@ struct InfectionResultWithInputs {
 InfectionResultWithInputs infection_probability_with_inputs(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0, bool use_fitted_qer = false);
+    double override_community_rate = 0,
+    QERDistribution distribution = QERDistribution::Jones);
 
 // Returns {ECAi_value, infected_flag}
 std::pair<double, int> compute_ECAi(
     const SimParameters& par, double target_P, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0, bool use_fitted_qer = false);
+    double override_community_rate = 0,
+    QERDistribution distribution = QERDistribution::Jones);

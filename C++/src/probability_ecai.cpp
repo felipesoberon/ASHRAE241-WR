@@ -101,7 +101,7 @@ int main(int argc, char* argv[]) {
     bool save_all = false;
     bool save_inputs = false;
     bool require_infectors = true;   // default: match original behavior
-    bool use_fitted_qer = false;     // default: Jones et al. 8-parameter method
+    QERDistribution qer_distribution = QERDistribution::Jones;
     double general_rate = -1;        // -1 = use each category's default (1%)
     double healthcare_rate = -1;     // -1 = use each category's default (3%)
     std::string outfile = "probabilityECAi_raw.bin";
@@ -120,7 +120,12 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--no-require-infectors") {
             require_infectors = false;
         } else if (arg == "--use-fitted-qer") {
-            use_fitted_qer = true;
+            qer_distribution = QERDistribution::JonesFitted;
+        } else if (arg == "--qer-distribution" && i + 1 < argc) {
+            if (!parse_qer_distribution(argv[++i], qer_distribution)) {
+                fprintf(stderr, "Unknown QER distribution. Use jones, fitted, or mikszewski.\n");
+                return 2;
+            }
         } else if (arg == "--community-rate-general" && i + 1 < argc) {
             general_rate = std::atof(argv[++i]);
         } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
@@ -167,7 +172,7 @@ int main(int argc, char* argv[]) {
             if (save_inputs) {
                 auto result = infection_probability_with_inputs(
                     ECAi, par, rng, category, require_infectors, cr,
-                    use_fitted_qer);
+                    qer_distribution);
                 probabilities.push_back(result.P);
 
                 // Store 21 fields: 3 from SimParameters + 6 from SimInputs
@@ -186,7 +191,7 @@ int main(int argc, char* argv[]) {
                 cat_inputs.insert(cat_inputs.end(), fields, fields + N_INPUT_FIELDS);
             } else {
                 auto [prob, _] = infection_probability(ECAi, par, rng, category,
-                    require_infectors, cr, use_fitted_qer);
+                    require_infectors, cr, qer_distribution);
                 probabilities.push_back(prob);
             }
         }

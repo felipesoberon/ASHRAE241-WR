@@ -14,6 +14,7 @@
 
 #pragma once
 #include "random_manager.h"
+#include "qer_distribution.h"
 #include <string>
 #include <map>
 
@@ -29,7 +30,11 @@ extern const std::map<std::string, QERFittedParams> qer_fitted_params;
 // Get fitted parameters for a category (throws if not found)
 const QERFittedParams& get_qer_fitted_params(const std::string& category);
 
-// Generate a random QER_i from the fitted log-normal distribution
-// Uses an LHS-buffered uniform via the random manager, transformed
-// through normal_ppf to produce a log-normal draw in log10 space.
+// Generate a random QER_i from the fitted Jones-derived log-normal distribution.
+// Uses an LHS-buffered uniform via the random manager.
 double QER_fitted(RandomNumberManager& rng, const std::string& category);
+
+// Mikszewski et al. (2022) SARS-CoV-2 standing/speaking distribution.
+// Parameters: median 2.7 quanta/h, sigma_log10 = 1.2.
+extern const QERFittedParams mikszewski_qer_params;
+double QER_mikszewski(RandomNumberManager& rng);

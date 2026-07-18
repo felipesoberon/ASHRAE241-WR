@@ -14,14 +14,19 @@
 
 int main(int argc, char* argv[]) {
     int N = 10000;
-    bool use_fitted_qer = false;
+    QERDistribution qer_distribution = QERDistribution::Jones;
     double general_rate = -1;        // -1 = use each category's default (1%)
     double healthcare_rate = -1;     // -1 = use each category's default (3%)
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--use-fitted-qer") {
-            use_fitted_qer = true;
+            qer_distribution = QERDistribution::JonesFitted;
+        } else if (arg == "--qer-distribution" && i + 1 < argc) {
+            if (!parse_qer_distribution(argv[++i], qer_distribution)) {
+                fprintf(stderr, "Unknown QER distribution. Use jones, fitted, or mikszewski.\n");
+                return 2;
+            }
         } else if (arg == "--community-rate-general" && i + 1 < argc) {
             general_rate = std::atof(argv[++i]);
         } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
@@ -61,7 +66,7 @@ int main(int argc, char* argv[]) {
                 auto par = sample_parameters(rng, category);
                 auto [prob, _f] = infection_probability(
                     static_cast<double>(ECAi), par, rng, category, false, cr,
-                    use_fitted_qer);
+                    qer_distribution);
                 probabilities.push_back(prob);
             }
             std::sort(probabilities.begin(), probabilities.end());

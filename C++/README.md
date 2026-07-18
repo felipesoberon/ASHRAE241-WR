@@ -39,13 +39,23 @@ Infection probability at ASHRAE 241 ECAi values:
                              [--no-require-infectors]
                              [--community-rate-general RATE]
                              [--community-rate-healthcare RATE]
+                             [--qer-distribution jones|jones-fitted|mikszewski]
                              [--use-fitted-qer]
 
-The --use-fitted-qer flag is accepted by all simulation executables that
-calculate QER_i: ecai, probability_ecai, probability_scan, and
-single_probability. It replaces the full 8-parameter QER_i calculation with
-a category-specific fitted log10-normal draw. Without the flag, all programs
-use the original Jones et al. method by default.
+The `--qer-distribution` option is accepted by all simulation executables that
+calculate QER_i: `ecai`, `probability_ecai`, `probability_scan`, and
+`single_probability`. Accepted values are:
+
+- `jones` (default): the full eight-parameter Jones et al. calculation.
+- `jones-fitted`: category-specific fitted log10-normal distributions derived
+  from the Jones model.
+- `mikszewski`: the universal SARS-CoV-2 standing/speaking distribution from
+  Mikszewski et al. (2022), Table 2, with median 2.7 quanta/h and
+  sigma_log10 = 1.2.
+
+The legacy `--use-fitted-qer` flag remains an alias for `jones-fitted`.
+All downstream dose, infection-probability, and ECAi calculations are shared
+between the options.
 
 The --save-inputs flag writes per-simulation input parameters (21 fields
 per simulation: sampled PBR, lambda_bio, gamma, n_infected, phi, QER_sum,
@@ -94,7 +104,9 @@ Requirements:
 
 Controls mirror mainGUI.py, plus separate community-rate entries for general
 (default 1%) and healthcare (default 3%) spaces, which map to the
---community-rate-general / --community-rate-healthcare engine flags.
+--community-rate-general / --community-rate-healthcare engine flags. The
+QER_i distribution combobox applies to both ECAi and Infection Probability
+runs and offers Jones full, Jones fitted, and Mikszewski distributions.
 
 Benchmark Results (N=10000, all 25 categories)
 ----------------------------------------------
@@ -125,13 +137,15 @@ Architecture
   src/random_manager.{h,cpp}  LHS engine + inverse CDFs
   src/model.{h,cpp}           Occupancy params + QER/infection/ECAi
                              + QER_with_inputs / infection_probability_with_inputs
-                             (use_fitted_qer flag selects method)
-  src/qer_fitted.{h,cpp}     Fitted log10-normal QER_i distributions
-                             (25-category dictionary + QER_fitted function)
+                             (QERDistribution selects the emission model)
+  src/qer_distribution.{h,cpp} Distribution enum and CLI-name parser
+  src/qer_fitted.{h,cpp}     Jones-fitted and Mikszewski log10-normal QER_i
+                             distributions (25-category dictionary + functions)
   src/ecai.cpp               ECAi simulation script
   src/probability_ecai.cpp   Probability at ASHRAE ECAi values
-                             (+ --save-inputs, --use-fitted-qer)
+                             (+ --save-inputs, --qer-distribution)
   src/probability_scan.cpp   ECAi threshold scan
+                             (+ --qer-distribution)
   src/single_probability.cpp Single-category analysis
   analysis/percentiles.cpp   Percentile table + threshold search
   analysis/boxplot.cpp        Text-based box plot

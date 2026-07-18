@@ -50,22 +50,26 @@ const QERFittedParams& get_qer_fitted_params(const std::string& category) {
     return it->second;
 }
 
-// Generate a random QER_i from the fitted log-normal distribution.
-// Uses a dedicated LHS buffer ("qer_fitted") for stratified sampling,
-// then transforms through normal_ppf to produce a log10-normal draw.
-//
-// QER_i = 10^(normal_ppf(u) * sigma10 + mu10)
-//
-// This is equivalent to scipy.stats.lognorm.ppf(u, s=sigma_ln,
-// scale=exp(mu_ln)) where sigma_ln = sigma10 * ln(10) and
-// mu_ln = mu10 * ln(10).
-double QER_fitted(RandomNumberManager& rng, const std::string& category) {
-    const auto& p = get_qer_fitted_params(category);
+static double qer_from_params(RandomNumberManager& rng,
+                              const QERFittedParams& p) {
     double u = rng.get("qer_fitted");
-    // Clamp to avoid infinities from normal_ppf at exact 0 or 1
+    // Clamp to avoid infinities from normal_ppf at exact 0 or 1.
     if (u <= 0.0) u = 1e-15;
     if (u >= 1.0) u = 1.0 - 1e-15;
-    double z = normal_ppf(u);               // standard normal quantile
-    double log10_qer = z * p.sigma_log10 + p.mu_log10;
-    return std::pow(10.0, log10_qer);       // QER_i in quanta/h
+    double z = normal_ppf(u);
+    return std::pow(10.0, z * p.sigma_log10 + p.mu_log10);
+}
+
+double QER_fitted(RandomNumberManager& rng, const std::string& category) {
+    return qer_from_params(rng, get_qer_fitted_params(category));
+}
+
+// Mikszewski et al. (2022), Table 2, SARS-CoV-2 standing/speaking.
+// The equivalent natural-log form is lognormal(ln(2.7), 1.2*ln(10)).
+const QERFittedParams mikszewski_qer_params = {
+    std::log10(2.7), 1.2
+};
+
+double QER_mikszewski(RandomNumberManager& rng) {
+    return qer_from_params(rng, mikszewski_qer_params);
 }
