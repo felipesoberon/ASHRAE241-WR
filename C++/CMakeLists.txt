@@ -10,10 +10,11 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic -O2)
 endif()
 
-# Core library (random_manager + model)
+# Core library (random_manager + model + qer_fitted)
 add_library(ashrae241 STATIC
     src/random_manager.cpp
     src/model.cpp
+    src/qer_fitted.cpp
 )
 target_include_directories(ashrae241 PUBLIC src)
 
@@ -46,3 +47,7 @@ add_test(NAME model COMMAND test_model)
 add_executable(test_validation tests/test_validation.cpp)
 target_link_libraries(test_validation PRIVATE ashrae241)
 add_test(NAME validation COMMAND test_validation)
+
+add_executable(test_qer_fitted tests/test_qer_fitted.cpp)
+target_link_libraries(test_qer_fitted PRIVATE ashrae241)
+add_test(NAME qer_fitted COMMAND test_qer_fitted)

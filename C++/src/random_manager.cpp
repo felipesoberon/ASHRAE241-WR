@@ -164,7 +164,7 @@ int binomial_ppf(double u, int n, double p) {
 RandomNumberManager::RandomNumberManager(std::size_t batch_size)
     : batch_size_(batch_size), rng_(std::random_device{}())
 {
-    for (const auto& dist : {"beta", "normal", "lognormal", "uniform", "binomial", "log10normal"}) {
+    for (const auto& dist : {"beta", "normal", "lognormal", "uniform", "binomial", "log10normal", "qer_fitted"}) {
         refill(dist);
     }
 }

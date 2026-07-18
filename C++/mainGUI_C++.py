@@ -97,7 +97,7 @@ def to_wsl_path(win_path):
 
 def run_cpp_simulation(calculation_type, N, allow_zero_infector,
                        use_ashrae_cir, general_rate, healthcare_rate,
-                       progress_callback=None):
+                       progress_callback=None, use_fitted_qer=False):
     """Run the C++ simulation executable and return (results, ashrae_results).
 
     The C++ executables are Linux ELF binaries built in WSL, so they must be
@@ -128,6 +128,8 @@ def run_cpp_simulation(calculation_type, N, allow_zero_infector,
         if not use_ashrae_cir:
             args += ["--community-rate-general", str(general_rate),
                      "--community-rate-healthcare", str(healthcare_rate)]
+        if use_fitted_qer:
+            args.append("--use-fitted-qer")
         csv_file = os.path.join(PROJECT_ROOT, "ecai_ashrae241_96th_percentile.csv")
 
     # Convert the Windows project path to its WSL path (handles any drive
@@ -205,7 +207,7 @@ def generate_simulation_data(N=10000, mode="ECAi", progress_callback=None):
     # Run C++ simulation
     values, ashrae_vals = run_cpp_simulation(
         mode, N, allow_zero, use_ashrae, general_rate, healthcare_rate,
-        progress_callback)
+        progress_callback, use_fitted_qer.get())
 
     if mode == "ECAi":
         xmax = max(max(values), max(ashrae_vals), 50)
@@ -349,6 +351,10 @@ ttk.Label(left_frame, text="Healthcare spaces rate (0-1):").pack(anchor="w")
 community_rate_healthcare_var = tk.StringVar(value="0.03")
 community_rate_healthcare_entry = ttk.Entry(left_frame, textvariable=community_rate_healthcare_var, width=10)
 community_rate_healthcare_entry.pack(anchor="w", pady=(0, 10))
+
+use_fitted_qer = tk.BooleanVar(value=False)
+fitted_qer_check = ttk.Checkbutton(left_frame, text="Use fitted log-normal QER (faster)", variable=use_fitted_qer)
+fitted_qer_check.pack(anchor="w", pady=(0, 10))
 
 ttk.Label(left_frame, text="Number of Simulations (N):").pack(anchor="w")
 simulation_count_var = tk.StringVar(value="10000")

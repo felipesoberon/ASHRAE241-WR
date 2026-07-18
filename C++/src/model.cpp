@@ -1,6 +1,7 @@
 // model.cpp — ASHRAE 241 risk model: occupancy params, QER, infection probability, ECAi
 
 #include "model.h"
+#include "qer_fitted.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -83,7 +84,13 @@ SimParameters sample_parameters(RandomNumberManager& rng, const std::string& cat
 }
 
 // --- QER ---
-double QER(RandomNumberManager& rng, const std::string& category) {
+// When use_fitted=false: full 8-parameter Jones et al. calculation (Eqs. 3-5)
+// When use_fitted=true: draw from fitted log10-normal distribution
+double QER(RandomNumberManager& rng, const std::string& category,
+           bool use_fitted) {
+    if (use_fitted) {
+        return QER_fitted(rng, category);
+    }
     const auto& occ = get_occupancy_parameters(category);
     double PBR    = random_lognormal_lhs(rng, std::log(occ.PBR_GM),  std::log(occ.PBR_GSD));
     double C_drop = random_lognormal_lhs(rng, std::log(occ.Cdrop_GM), std::log(occ.Cdrop_GSD));
@@ -102,10 +109,17 @@ double QER(RandomNumberManager& rng, const std::string& category) {
 
 // --- QER_with_inputs ---
 // Same computation as QER(), but also returns the sampled values.
-// The RNG call sequence is identical to QER().
+// When use_fitted=true, the QERInputs fields are zeroed (no sub-parameters).
 std::pair<double, QERInputs> QER_with_inputs(
-    RandomNumberManager& rng, const std::string& category)
+    RandomNumberManager& rng, const std::string& category,
+    bool use_fitted)
 {
+    if (use_fitted) {
+        double val = QER_fitted(rng, category);
+        QERInputs qi{};  // zero-initialized
+        qi.QER_val = val;
+        return {val, qi};
+    }
     const auto& occ = get_occupancy_parameters(category);
     double PBR    = random_lognormal_lhs(rng, std::log(occ.PBR_GM),  std::log(occ.PBR_GSD));
     double C_drop = random_lognormal_lhs(rng, std::log(occ.Cdrop_GM), std::log(occ.Cdrop_GSD));
@@ -141,7 +155,7 @@ std::pair<double, QERInputs> QER_with_inputs(
 std::pair<double, int> infection_probability(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors,
-    double override_community_rate)
+    double override_community_rate, bool use_fitted_qer)
 {
     double TECAi = ECAi * par.I0 * 3.6;
     double phi = par.gamma + par.lambda_bio + TECAi / par.VOL;
@@ -159,7 +173,7 @@ std::pair<double, int> infection_probability(
     if (n_infected > 0) {
         double QER_sum = 0;
         for (int i = 0; i < n_infected; i++)
-            QER_sum += QER(rng, category);
+            QER_sum += QER(rng, category, use_fitted_qer);
         double mask_factor = std::pow(1.0 - par.mask_efficiency, 2);
         double Q = (par.PBR * par.D * mask_factor / (phi * par.VOL)) * QER_sum;
         P = 1.0 - std::exp(-Q);
@@ -175,7 +189,7 @@ std::pair<double, int> infection_probability(
 InfectionResultWithInputs infection_probability_with_inputs(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors,
-    double override_community_rate)
+    double override_community_rate, bool use_fitted_qer)
 {
     double TECAi = ECAi * par.I0 * 3.6;
     double phi = par.gamma + par.lambda_bio + TECAi / par.VOL;
@@ -198,11 +212,11 @@ InfectionResultWithInputs infection_probability_with_inputs(
     if (n_infected > 0) {
         for (int i = 0; i < n_infected; i++) {
             if (i == 0) {
-                auto [val, qi] = QER_with_inputs(rng, category);
+                auto [val, qi] = QER_with_inputs(rng, category, use_fitted_qer);
                 QER_sum += val;
                 qer_first = qi;
             } else {
-                QER_sum += QER(rng, category);
+                QER_sum += QER(rng, category, use_fitted_qer);
             }
         }
         mask_factor = std::pow(1.0 - par.mask_efficiency, 2);
@@ -226,7 +240,7 @@ InfectionResultWithInputs infection_probability_with_inputs(
 std::pair<double, int> compute_ECAi(
     const SimParameters& par, double target_P, RandomNumberManager& rng,
     const std::string& category, bool require_infectors,
-    double override_community_rate)
+    double override_community_rate, bool use_fitted_qer)
 {
     double comm_rate = (override_community_rate > 0) ? override_community_rate : par.community_rate;
 
@@ -243,7 +257,7 @@ std::pair<double, int> compute_ECAi(
         double Q = -std::log(1.0 - target_P);
         double QER_sum = 0;
         for (int i = 0; i < n_infected; i++)
-            QER_sum += QER(rng, category);
+            QER_sum += QER(rng, category, use_fitted_qer);
 
         double mask_factor_sq = std::pow(1.0 - par.mask_efficiency, 2);
         double term1 = (par.PBR * par.D * mask_factor_sq / Q) * QER_sum;

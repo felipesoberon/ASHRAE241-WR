@@ -39,6 +39,15 @@ Infection probability at ASHRAE 241 ECAi values:
                              [--no-require-infectors]
                              [--community-rate-general RATE]
                              [--community-rate-healthcare RATE]
+                             [--use-fitted-qer]
+
+The --use-fitted-qer flag replaces the 8-parameter QER_i calculation
+(Eqs. 3-5, Jones et al. 2025) with a single draw from a fitted log10-normal
+distribution per category. The fitted parameters are stored in
+src/qer_fitted.cpp and were derived from 1,000,000 simulations per category
+of the full Jones et al. model. This gives a ~15-25x speedup with results
+within 0-2% of the full method. Without the flag, the default is the full
+Jones et al. calculation (unchanged behaviour).
 
 The --save-inputs flag writes per-simulation input parameters (21 fields
 per simulation: sampled PBR, lambda_bio, gamma, n_infected, phi, QER_sum,
@@ -118,15 +127,19 @@ Architecture
   src/random_manager.{h,cpp}  LHS engine + inverse CDFs
   src/model.{h,cpp}           Occupancy params + QER/infection/ECAi
                              + QER_with_inputs / infection_probability_with_inputs
+                             (use_fitted_qer flag selects method)
+  src/qer_fitted.{h,cpp}     Fitted log10-normal QER_i distributions
+                             (25-category dictionary + QER_fitted function)
   src/ecai.cpp               ECAi simulation script
   src/probability_ecai.cpp   Probability at ASHRAE ECAi values
-                             (+ --save-inputs for driver analysis)
+                             (+ --save-inputs, --use-fitted-qer)
   src/probability_scan.cpp   ECAi threshold scan
   src/single_probability.cpp Single-category analysis
   analysis/percentiles.cpp   Percentile table + threshold search
   analysis/boxplot.cpp        Text-based box plot
   mainGUI_C++.py             Tkinter GUI (C++ engine via WSL)
   tests/                     Unit tests + cross-validation
+                             (test_qer_fitted for fitted distributions)
 
 Binary raw data format (--save-all)
 ------------------------------------

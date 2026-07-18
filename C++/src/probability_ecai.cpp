@@ -101,6 +101,7 @@ int main(int argc, char* argv[]) {
     bool save_all = false;
     bool save_inputs = false;
     bool require_infectors = true;   // default: match original behavior
+    bool use_fitted_qer = false;     // default: Jones et al. 8-parameter method
     double general_rate = -1;        // -1 = use each category's default (1%)
     double healthcare_rate = -1;     // -1 = use each category's default (3%)
     std::string outfile = "probabilityECAi_raw.bin";
@@ -118,6 +119,8 @@ int main(int argc, char* argv[]) {
             inputs_file = argv[++i];
         } else if (arg == "--no-require-infectors") {
             require_infectors = false;
+        } else if (arg == "--use-fitted-qer") {
+            use_fitted_qer = true;
         } else if (arg == "--community-rate-general" && i + 1 < argc) {
             general_rate = std::atof(argv[++i]);
         } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
@@ -163,7 +166,8 @@ int main(int argc, char* argv[]) {
             auto par = sample_parameters(rng, category);
             if (save_inputs) {
                 auto result = infection_probability_with_inputs(
-                    ECAi, par, rng, category, require_infectors, cr);
+                    ECAi, par, rng, category, require_infectors, cr,
+                    use_fitted_qer);
                 probabilities.push_back(result.P);
 
                 // Store 21 fields: 3 from SimParameters + 6 from SimInputs
@@ -182,7 +186,7 @@ int main(int argc, char* argv[]) {
                 cat_inputs.insert(cat_inputs.end(), fields, fields + N_INPUT_FIELDS);
             } else {
                 auto [prob, _] = infection_probability(ECAi, par, rng, category,
-                    require_infectors, cr);
+                    require_infectors, cr, use_fitted_qer);
                 probabilities.push_back(prob);
             }
         }

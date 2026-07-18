@@ -46,7 +46,12 @@ struct SimParameters {
 
 SimParameters sample_parameters(RandomNumberManager& rng, const std::string& category);
 
-double QER(RandomNumberManager& rng, const std::string& category);
+// QER calculation. When use_fitted=false (default), uses the full
+// 8-parameter Jones et al. (2025) calculation (Eqs. 3-5).
+// When use_fitted=true, draws from the fitted log10-normal distribution
+// for the given category (see qer_fitted.h).
+double QER(RandomNumberManager& rng, const std::string& category,
+           bool use_fitted = false);
 
 // QER with inputs: returns {QER_value, sampled parameter values}
 struct QERInputs {
@@ -64,13 +69,14 @@ struct QERInputs {
     double QER_val;
 };
 std::pair<double, QERInputs> QER_with_inputs(
-    RandomNumberManager& rng, const std::string& category);
+    RandomNumberManager& rng, const std::string& category,
+    bool use_fitted = false);
 
 // Returns {probability, infected_flag}
 std::pair<double, int> infection_probability(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0);
+    double override_community_rate = 0, bool use_fitted_qer = false);
 
 // Infection probability with inputs: returns {probability, flag,
 // intermediate values for driver analysis}
@@ -93,10 +99,10 @@ struct InfectionResultWithInputs {
 InfectionResultWithInputs infection_probability_with_inputs(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0);
+    double override_community_rate = 0, bool use_fitted_qer = false);
 
 // Returns {ECAi_value, infected_flag}
 std::pair<double, int> compute_ECAi(
     const SimParameters& par, double target_P, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0);
+    double override_community_rate = 0, bool use_fitted_qer = false);
