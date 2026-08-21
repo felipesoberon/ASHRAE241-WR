@@ -83,16 +83,16 @@ Scan for minimum ECAi:
     ./build/probability_scan [N] [--community-rate-general RATE]
                                  [--community-rate-healthcare RATE]
 
-Patient ECAi Monte Carlo study:
+ECAi uncertainty study:
 
-    ./build/patient_ecai_monte_carlo_study
+    ./build/ecai_uncertainty_study [--method replicate|bootstrap|order-statistic]
+                                  [--category NAME] [--simulations N]
+                                  [--repeats R] [--resamples B]
 
-This standalone study runs 25 independent replicates of 10,000 Patient
-simulations using the `ecai` calculation path. It records the interpolated
-96th-percentile ECAi value from each replicate and reports the sample mean,
-standard deviation, standard error, and a two-sided 95% Student-t confidence
-interval. Results are written to
-`patient_ecai_monte_carlo_study_results/` relative to the executable's working
+This standalone study supports replicate, bootstrap, and order-statistic
+methods for any occupancy category. Defaults are 25 replicates of 10,000
+simulations for the `Patient` category. Results are written to
+`ecai_uncertainty_study_results/` relative to the executable's working
 directory. The study is not registered as a CTest test.
 
 Community infection rate options: `--community-rate-general` sets the rate for

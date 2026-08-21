@@ -36,8 +36,8 @@ target_link_libraries(percentiles PRIVATE ashrae241)
 target_link_libraries(boxplot    PRIVATE ashrae241)
 
 # Standalone Monte Carlo study (not a CTest test; run manually).
-add_executable(patient_ecai_monte_carlo_study analysis/patient_ecai_monte_carlo_study.cpp)
-target_link_libraries(patient_ecai_monte_carlo_study PRIVATE ashrae241)
+add_executable(ecai_uncertainty_study analysis/ecai_uncertainty_study.cpp)
+target_link_libraries(ecai_uncertainty_study PRIVATE ashrae241)
 
 # Tests
 enable_testing()
