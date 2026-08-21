@@ -19,6 +19,12 @@ Run tests:
 
     cd build && ctest -V
 
+The LHS block size is set to the requested simulation count `N` for each
+simulation run. Each distribution keeps a separate buffer, and an exhausted
+buffer is refilled with another block of the same size. All four simulation
+entry points reject `N <= 0` with a nonzero exit status; positive values are
+accepted.
+
 Usage
 -----
 
@@ -76,6 +82,18 @@ Scan for minimum ECAi:
 
     ./build/probability_scan [N] [--community-rate-general RATE]
                                  [--community-rate-healthcare RATE]
+
+Patient ECAi Monte Carlo study:
+
+    ./build/patient_ecai_monte_carlo_study
+
+This standalone study runs 25 independent replicates of 10,000 Patient
+simulations using the `ecai` calculation path. It records the interpolated
+96th-percentile ECAi value from each replicate and reports the sample mean,
+standard deviation, standard error, and a two-sided 95% Student-t confidence
+interval. Results are written to
+`patient_ecai_monte_carlo_study_results/` relative to the executable's working
+directory. The study is not registered as a CTest test.
 
 Community infection rate options: `--community-rate-general` sets the rate for
 general spaces (default 1%) and `--community-rate-healthcare` for healthcare
