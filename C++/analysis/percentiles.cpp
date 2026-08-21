@@ -49,7 +49,12 @@ static DataSet load_binary(const std::string& path) {
     return data;
 }
 
+// Linear-interpolation percentile over a pre-sorted series.
+// p is clamped to [0, 100]; an empty series returns NaN instead of
+// indexing out of bounds.
 static double percentile(const std::vector<double>& sorted, double p) {
+    if (sorted.empty()) return std::nan("");
+    p = std::clamp(p, 0.0, 100.0);
     double rank = (p / 100.0) * (sorted.size() - 1);
     int lo = static_cast<int>(std::floor(rank));
     int hi = static_cast<int>(std::ceil(rank));
@@ -76,20 +81,33 @@ static void report_table(const DataSet& data,
     }
 }
 
+// Returns the largest percentile value across categories with data, or NaN if
+// no category has any data (an empty series yields NaN, which never compares
+// greater and so is skipped).
 static double worst_at(const DataSet& data,
                        double p, std::string& worst_cat) {
-    double worst = -1e9;
+    double worst = std::nan("");
     for (const auto& [cat, arr] : data) {
         std::vector<double> sorted = arr;
         std::sort(sorted.begin(), sorted.end());
         double val = percentile(sorted, p) * 100;
-        if (val > worst) { worst = val; worst_cat = cat; }
+        if (std::isnan(val)) continue;
+        if (std::isnan(worst) || val > worst) { worst = val; worst_cat = cat; }
     }
     return worst;
 }
 
-static void report_threshold(const DataSet& data,
-                              double target_pct) {
+// Returns 0 on a completed search, 1 if there is no data to search over.
+static int report_threshold(const DataSet& data,
+                             double target_pct) {
+    // With no values anywhere, every percentile is undefined. Say so instead
+    // of reporting that all categories pass the target.
+    std::string probe_cat;
+    if (std::isnan(worst_at(data, 50, probe_cat))) {
+        fprintf(stderr, "Error: no data in any category; cannot evaluate threshold.\n");
+        return 1;
+    }
+
     printf("Coarse-to-fine search for highest percentile with all categories < %.2f%%\n\n", target_pct);
     int lo = 25, hi = 95;
     int best = -1;
@@ -134,7 +152,7 @@ static void report_threshold(const DataSet& data,
                 best = -1;
                 printf("Even the %dth percentile exceeds %.2f%%; crossing is below %d.\n", lo, target_pct, lo);
             }
-            return;
+            return 0;
         }
 
         lo = interval_lo;
@@ -142,6 +160,7 @@ static void report_threshold(const DataSet& data,
         best = lo;
     }
     printf("Highest percentile where ALL categories < %.2f%%: %d\n", target_pct, best);
+    return 0;
 }
 
 int main(int argc, char* argv[]) {
@@ -156,7 +175,10 @@ int main(int argc, char* argv[]) {
             report = argv[++i];
         } else if (arg == "--percentiles" && i + 1 < argc) {
             percentiles.clear();
-            while (i + 1 < argc && argv[i+1][0] != '-') {
+            // Stop at the next flag (--xxx), not at a bare '-' — otherwise a
+            // negative percentile (e.g. -10, used to exercise clamping)
+            // could never be passed in.
+            while (i + 1 < argc && !(argv[i+1][0] == '-' && argv[i+1][1] == '-')) {
                 percentiles.push_back(std::atoi(argv[++i]));
             }
         } else if (arg == "--target" && i + 1 < argc) {
@@ -175,7 +197,7 @@ int main(int argc, char* argv[]) {
         printf("\n");
     }
     if (report == "threshold" || report == "both") {
-        report_threshold(data, target);
+        return report_threshold(data, target);
     }
 
     return 0;

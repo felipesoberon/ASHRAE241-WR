@@ -4,6 +4,7 @@
 #include "random_manager.h"
 #include <cstdio>
 #include <cmath>
+#include <stdexcept>
 
 static int failures = 0;
 
@@ -56,13 +57,14 @@ int main() {
     if (q <= 0 || !std::isfinite(q)) { printf("FAIL: QER = %f\n", q); failures++; }
 
     // ---- infection_probability ----
-    auto [prob, flag] = infection_probability(20, par, rng, "Classroom", false, 0);
+    // override_community_rate = -1 means "unset" (use category default).
+    auto [prob, flag] = infection_probability(20, par, rng, "Classroom", false, -1);
     if (prob < 0 || prob >= 1 || !std::isfinite(prob)) {
         printf("FAIL: P = %f\n", prob); failures++;
     }
 
     // ---- compute_ECAi ----
-    auto [ecai, flag2] = compute_ECAi(par, 0.001, rng, "Classroom", false, 0);
+    auto [ecai, flag2] = compute_ECAi(par, 0.001, rng, "Classroom", false, -1);
     if (ecai < 0 || !std::isfinite(ecai)) {
         printf("FAIL: ECAi = %f\n", ecai); failures++;
     }
@@ -70,14 +72,114 @@ int main() {
     // ---- infection_probability with require_infectors ----
     // With require_infectors=true, flag should always be 1
     for (int i = 0; i < 100; i++) {
-        auto [p, f] = infection_probability(20, par, rng, "Classroom", true, 0);
+        auto [p, f] = infection_probability(20, par, rng, "Classroom", true, -1);
         if (f != 1) { printf("FAIL: require_infectors gave flag=0\n"); failures++; break; }
     }
 
     // ---- compute_ECAi with require_infectors ----
     for (int i = 0; i < 100; i++) {
-        auto [e, f] = compute_ECAi(par, 0.001, rng, "Classroom", true, 0);
+        auto [e, f] = compute_ECAi(par, 0.001, rng, "Classroom", true, -1);
         if (f != 1) { printf("FAIL: require_infectors (ECAi) gave flag=0\n"); failures++; break; }
+    }
+
+    // ---- override_community_rate sentinel semantics ----
+    // An explicit 0 override must be honored (no infectors ever drawn),
+    // an omitted/default (-1) override must fall back to the category's
+    // default community_rate, and a positive override must be honored too.
+    {
+        // Explicit zero: comm_rate = 0 means n_infected is always 0, so
+        // infection_probability must return flag=0 and P=0 every time.
+        bool saw_infected = false;
+        for (int i = 0; i < 200; i++) {
+            auto [p, f] = infection_probability(20, par, rng, "Classroom", false, 0.0);
+            if (f != 0 || p != 0.0) { saw_infected = true; break; }
+        }
+        if (saw_infected) {
+            printf("FAIL: explicit override_community_rate=0 was not honored\n");
+            failures++;
+        }
+    }
+    {
+        // Omitted override (uses the default parameter value, -1) must fall
+        // back to par.community_rate. Checked deterministically by forcing
+        // that field to each extreme, instead of comparing two independent
+        // random_device-seeded RNG streams.
+        auto par_zero = par;
+        par_zero.community_rate = 0.0;
+        for (int i = 0; i < 50; i++) {
+            auto [p, f] = infection_probability(20, par_zero, rng, "Classroom");
+            if (f != 0 || p != 0.0) {
+                printf("FAIL: omitted override did not use par.community_rate=0\n");
+                failures++; break;
+            }
+        }
+        auto par_one = par;
+        par_one.community_rate = 1.0;
+        for (int i = 0; i < 50; i++) {
+            auto [p, f] = infection_probability(20, par_one, rng, "Classroom");
+            if (f != 1 || !(p > 0.0) || !std::isfinite(p)) {
+                printf("FAIL: omitted override did not use par.community_rate=1\n");
+                failures++; break;
+            }
+        }
+    }
+    {
+        // Positive override: with require_infectors=true and comm_rate=1.0,
+        // every draw must yield n_infected == par.I0 infectors, so flag=1
+        // is guaranteed and P should be > 0 (Classroom I0=30 infectors).
+        auto [p, f] = infection_probability(20, par, rng, "Classroom", true, 1.0);
+        if (f != 1 || !(p > 0.0) || !std::isfinite(p)) {
+            printf("FAIL: positive override_community_rate=1.0 not honored (P=%f, flag=%d)\n", p, f);
+            failures++;
+        }
+    }
+
+    // ---- require_infectors with a zero community rate is invalid ----
+    // Zero infectors are impossible, so all three model functions must throw
+    // std::invalid_argument rather than retry forever.
+    {
+        bool threw = false;
+        try {
+            infection_probability(20, par, rng, "Classroom", true, 0.0);
+        } catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) {
+            printf("FAIL: infection_probability accepted require_infectors with rate 0\n");
+            failures++;
+        }
+    }
+    {
+        bool threw = false;
+        try {
+            infection_probability_with_inputs(20, par, rng, "Classroom", true, 0.0);
+        } catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) {
+            printf("FAIL: infection_probability_with_inputs accepted require_infectors with rate 0\n");
+            failures++;
+        }
+    }
+    {
+        bool threw = false;
+        try {
+            compute_ECAi(par, 0.001, rng, "Classroom", true, 0.0);
+        } catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) {
+            printf("FAIL: compute_ECAi accepted require_infectors with rate 0\n");
+            failures++;
+        }
+    }
+    {
+        // Same rejection when the zero rate comes from par.community_rate
+        // (omitted override) rather than an explicit override.
+        auto par_zero_req = par;
+        par_zero_req.community_rate = 0.0;
+        bool threw = false;
+        try {
+            compute_ECAi(par_zero_req, 0.001, rng, "Classroom", true);
+        } catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) {
+            printf("FAIL: default zero community rate accepted with require_infectors\n");
+            failures++;
+        }
     }
 
     // ---- Check mask_eff for healthcare categories ----

@@ -9,7 +9,15 @@
 #include <string>
 #include <array>
 #include <filesystem>
+
+#ifdef _WIN32
+#define WR_POPEN _popen
+#define WR_PCLOSE _pclose
+#else
 #include <sys/wait.h>
+#define WR_POPEN popen
+#define WR_PCLOSE pclose
+#endif
 
 namespace fs = std::filesystem;
 
@@ -26,15 +34,24 @@ struct RunResult {
 static RunResult run(const std::string& scratch, const std::string& exe,
                       const std::string& args) {
     RunResult result;
+#ifdef _WIN32
+    std::string cmd = "cd /d \"" + scratch + "\" && ..\\" + exe + ".exe " + args +
+                       " 2>&1 1>NUL";
+#else
     std::string cmd = "cd '" + scratch + "' && ../" + exe + " " + args +
                        " 2>&1 1>/dev/null";
-    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+    FILE* pipe = WR_POPEN(cmd.c_str(), "r");
     if (!pipe) return result;
     std::array<char, 512> buf{};
     while (fgets(buf.data(), buf.size(), pipe)) result.stderr_output += buf.data();
-    int status = pclose(pipe);
+    int status = WR_PCLOSE(pipe);
     result.ran = true;
+#ifdef _WIN32
+    result.exit_code = status;
+#else
     if (WIFEXITED(status)) result.exit_code = WEXITSTATUS(status);
+#endif
     return result;
 }
 
@@ -82,14 +99,17 @@ int main() {
 
     // ---- ecai: positional N ----
     expect_rejected(scratch.string(), "ecai", "0", "ecai N=0");
+    expect_rejected(scratch.string(), "ecai", "-5", "ecai N=-5");
     expect_accepted(scratch.string(), "ecai", "5", "ecai N=5");
 
     // ---- probability_scan: positional N ----
     expect_rejected(scratch.string(), "probability_scan", "0", "probability_scan N=0");
+    expect_rejected(scratch.string(), "probability_scan", "-5", "probability_scan N=-5");
     expect_accepted(scratch.string(), "probability_scan", "5", "probability_scan N=5");
 
     // ---- probability_ecai: positional N ----
     expect_rejected(scratch.string(), "probability_ecai", "0", "probability_ecai N=0");
+    expect_rejected(scratch.string(), "probability_ecai", "-5", "probability_ecai N=-5");
     expect_accepted(scratch.string(), "probability_ecai", "5", "probability_ecai N=5");
 
     // ---- single_probability: --N flag (also accepts negative values) ----

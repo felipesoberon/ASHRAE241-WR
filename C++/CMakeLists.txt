@@ -59,3 +59,7 @@ add_test(NAME qer_fitted COMMAND test_qer_fitted)
 
 add_executable(test_cli_n_validation tests/test_cli_n_validation.cpp)
 add_test(NAME cli_n_validation COMMAND test_cli_n_validation)
+
+add_executable(test_percentiles tests/test_percentiles.cpp)
+add_dependencies(test_percentiles percentiles)
+add_test(NAME percentiles COMMAND test_percentiles)

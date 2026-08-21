@@ -143,8 +143,13 @@ double beta_ppf(double u, double a, double b) {
 // Uses log-space PMF to avoid overflow for large n
 // ----------------------------------------------------------------
 int binomial_ppf(double u, int n, double p) {
+    if (p < 0.0 || p > 1.0) {
+        throw std::invalid_argument("binomial_ppf: p must be in [0, 1]");
+    }
     if (u <= 0.0) return 0;
     if (u >= 1.0) return n;
+    if (p <= 0.0) return 0;
+    if (p >= 1.0) return n;
     double cdf = 0.0;
     double log_p = std::log(p);
     double log_1mp = std::log(1.0 - p);

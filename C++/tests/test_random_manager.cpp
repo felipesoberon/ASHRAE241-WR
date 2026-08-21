@@ -5,6 +5,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <stdexcept>
 
 static int failures = 0;
 
@@ -57,6 +58,23 @@ int main() {
     // Edge cases
     if (binomial_ppf(0.0, 10, 0.3) != 0) { printf("FAIL: binomial_ppf(0,...) != 0\n"); failures++; }
     if (binomial_ppf(1.0, 10, 0.3) != 10) { printf("FAIL: binomial_ppf(1,...) != 10\n"); failures++; }
+    // p=0: all mass at k=0, so ppf must be 0 for any u in (0,1), not just u<=0
+    if (binomial_ppf(0.5, 10, 0.0) != 0) { printf("FAIL: binomial_ppf(0.5,10,p=0) != 0\n"); failures++; }
+    if (binomial_ppf(0.999, 10, 0.0) != 0) { printf("FAIL: binomial_ppf(0.999,10,p=0) != 0\n"); failures++; }
+    // p=1: all mass at k=n, so ppf must be n for any u in (0,1), not just u>=1
+    if (binomial_ppf(0.5, 10, 1.0) != 10) { printf("FAIL: binomial_ppf(0.5,10,p=1) != 10\n"); failures++; }
+    if (binomial_ppf(0.001, 10, 1.0) != 10) { printf("FAIL: binomial_ppf(0.001,10,p=1) != 10\n"); failures++; }
+    // invalid p outside [0,1] must throw, not silently misbehave
+    {
+        bool threw = false;
+        try { binomial_ppf(0.5, 10, -0.1); } catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) { printf("FAIL: binomial_ppf(...,p=-0.1) did not throw\n"); failures++; }
+    }
+    {
+        bool threw = false;
+        try { binomial_ppf(0.5, 10, 1.1); } catch (const std::invalid_argument&) { threw = true; }
+        if (!threw) { printf("FAIL: binomial_ppf(...,p=1.1) did not throw\n"); failures++; }
+    }
 
     // ---- LHS stratification ----
     // Draw 10000 from 'uniform' buffer, check stratification

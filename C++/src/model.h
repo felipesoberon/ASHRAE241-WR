@@ -74,10 +74,15 @@ std::pair<double, QERInputs> QER_with_inputs(
     QERDistribution distribution = {});
 
 // Returns {probability, infected_flag}
+// override_community_rate: a negative value (default) means "unset" and
+// falls back to the category's default community rate; any value in
+// [0, 1], including an explicit 0, is honored as-is.
+// Throws std::invalid_argument if require_infectors is true and the
+// effective community rate is 0: no infector could ever be drawn.
 std::pair<double, int> infection_probability(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0,
+    double override_community_rate = -1,
     QERDistribution distribution = {});
 
 // Infection probability with inputs: returns {probability, flag,
@@ -101,12 +106,13 @@ struct InfectionResultWithInputs {
 InfectionResultWithInputs infection_probability_with_inputs(
     double ECAi, const SimParameters& par, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0,
+    double override_community_rate = -1,
     QERDistribution distribution = {});
 
 // Returns {ECAi_value, infected_flag}
+// See infection_probability() for override_community_rate semantics.
 std::pair<double, int> compute_ECAi(
     const SimParameters& par, double target_P, RandomNumberManager& rng,
     const std::string& category, bool require_infectors = false,
-    double override_community_rate = 0,
+    double override_community_rate = -1,
     QERDistribution distribution = {});

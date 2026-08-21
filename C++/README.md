@@ -99,7 +99,9 @@ Community infection rate options: `--community-rate-general` sets the rate for
 general spaces (default 1%) and `--community-rate-healthcare` for healthcare
 spaces (Exam, Group, Patient, Resident, Waiting; default 3%). When a flag is
 omitted, that group keeps its per-category ASHRAE 241 default, so results are
-unchanged from the original model.
+unchanged from the original model. An explicit rate of `0` is honored. If
+`require_infectors` is enabled with an effective rate of `0`, the calculation
+reports an invalid configuration rather than retrying indefinitely.
 
 Single category:
 
@@ -108,6 +110,10 @@ Single category:
 Analysis (percentile table + threshold search):
 
     ./build/percentiles [infile] [--report both|table|threshold] [--target 0.1]
+
+Percentiles outside 0–100 are clamped to the valid range. Empty categories are
+reported as `nan`; a threshold report with no data in any category exits with
+an error instead of reporting a false pass.
 
 Box plot (text-based):
 

@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
     }
 
     double ECAi = (ecai_override >= 0) ? ecai_override : it->second.ECAi;
-    double comm_rate = (community_rate >= 0) ? community_rate : 0;  // 0 means use default
+    double comm_rate = (community_rate >= 0) ? community_rate : -1;  // -1 means use default
     bool use_default_comm = (community_rate < 0);
 
     RandomNumberManager rng(static_cast<std::size_t>(N));
@@ -83,7 +83,7 @@ int main(int argc, char* argv[]) {
 
     for (int i = 0; i < N; i++) {
         auto par = sample_parameters(rng, category);
-        double cr = use_default_comm ? 0 : comm_rate;
+        double cr = use_default_comm ? -1 : comm_rate;
         auto [prob, infected_flag] = infection_probability(
             ECAi, par, rng, category, !allow_zero_infectors, cr,
  qer_distribution);

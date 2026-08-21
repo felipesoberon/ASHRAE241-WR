@@ -5,6 +5,7 @@
 
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -38,7 +39,7 @@ int main(int argc, char* argv[]) {
             general_rate = std::atof(argv[++i]);
         } else if (arg == "--community-rate-healthcare" && i + 1 < argc) {
             healthcare_rate = std::atof(argv[++i]);
-        } else if (arg[0] != '-') {
+        } else if (arg[0] != '-' || (arg.size() > 1 && std::isdigit(static_cast<unsigned char>(arg[1])))) {
             N = std::atoi(arg.c_str());
         }
     }

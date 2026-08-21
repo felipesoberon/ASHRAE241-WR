@@ -8,6 +8,22 @@
 
 namespace {
 constexpr double PI = 3.14159265358979323846;
+
+// Resolve the effective community rate from the override sentinel and reject
+// the impossible combination of require_infectors=true with a zero rate,
+// which could never draw an infector and would otherwise retry forever.
+double resolve_community_rate(const SimParameters& par, bool require_infectors,
+                              double override_community_rate, const char* fn)
+{
+    double comm_rate = (override_community_rate >= 0) ? override_community_rate
+                                                      : par.community_rate;
+    if (require_infectors && comm_rate <= 0.0) {
+        throw std::invalid_argument(
+            std::string(fn) + ": require_infectors=true is impossible with a "
+            "community rate of 0");
+    }
+    return comm_rate;
+}
 }
 
 // --- OCCUPANCY PARAMETERS ---
@@ -168,7 +184,9 @@ std::pair<double, int> infection_probability(
 {
     double TECAi = ECAi * par.I0 * 3.6;
     double phi = par.gamma + par.lambda_bio + TECAi / par.VOL;
-    double comm_rate = (override_community_rate > 0) ? override_community_rate : par.community_rate;
+    double comm_rate = resolve_community_rate(par, require_infectors,
+                                              override_community_rate,
+                                              "infection_probability");
 
     int n_infected = random_binomial_lhs(rng, par.I0, comm_rate);
     if (require_infectors) {
@@ -202,7 +220,9 @@ InfectionResultWithInputs infection_probability_with_inputs(
 {
     double TECAi = ECAi * par.I0 * 3.6;
     double phi = par.gamma + par.lambda_bio + TECAi / par.VOL;
-    double comm_rate = (override_community_rate > 0) ? override_community_rate : par.community_rate;
+    double comm_rate = resolve_community_rate(par, require_infectors,
+                                              override_community_rate,
+                                              "infection_probability_with_inputs");
 
     int n_infected = random_binomial_lhs(rng, par.I0, comm_rate);
     if (require_infectors) {
@@ -251,7 +271,9 @@ std::pair<double, int> compute_ECAi(
     const std::string& category, bool require_infectors,
     double override_community_rate, QERDistribution distribution)
 {
-    double comm_rate = (override_community_rate > 0) ? override_community_rate : par.community_rate;
+    double comm_rate = resolve_community_rate(par, require_infectors,
+                                              override_community_rate,
+                                              "compute_ECAi");
 
     int n_infected = random_binomial_lhs(rng, par.I0, comm_rate);
     if (require_infectors) {
