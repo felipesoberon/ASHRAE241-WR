@@ -35,6 +35,10 @@ add_executable(boxplot      analysis/boxplot.cpp)
 target_link_libraries(percentiles PRIVATE ashrae241)
 target_link_libraries(boxplot    PRIVATE ashrae241)
 
+# Standalone Monte Carlo study (not a CTest test; run manually).
+add_executable(patient_ecai_monte_carlo_study analysis/patient_ecai_monte_carlo_study.cpp)
+target_link_libraries(patient_ecai_monte_carlo_study PRIVATE ashrae241)
+
 # Tests
 enable_testing()
 add_executable(test_random_manager tests/test_random_manager.cpp)
@@ -52,3 +56,6 @@ add_test(NAME validation COMMAND test_validation)
 add_executable(test_qer_fitted tests/test_qer_fitted.cpp)
 target_link_libraries(test_qer_fitted PRIVATE ashrae241)
 add_test(NAME qer_fitted COMMAND test_qer_fitted)
+
+add_executable(test_cli_n_validation tests/test_cli_n_validation.cpp)
+add_test(NAME cli_n_validation COMMAND test_cli_n_validation)

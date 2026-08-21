@@ -106,6 +106,83 @@ int main() {
         }
     }
 
+    // ---- Block sizing uses the supplied N, not the 1,000,000 default ----
+    // With a tiny batch size (N=5), the LHS stratification is over exactly
+    // 5 equal-width bins. If the default (1,000,000) batch were used
+    // instead, 5 draws landing one-per-bin across [0,1/5),[1/5,2/5),...
+    // would be astronomically unlikely (chance ~5!/5^5 ≈ 0.038, and even
+    // then the values wouldn't concentrate near each bin's LHS stratum).
+    {
+        const int N = 5;
+        RandomNumberManager mgr(N);
+        std::vector<int> seen(N, 0);
+        for (int i = 0; i < N; i++) {
+            double v = mgr.get("uniform");
+            int b = std::min(static_cast<int>(v * N), N - 1);
+            seen[b]++;
+        }
+        for (int b = 0; b < N; b++) {
+            if (seen[b] != 1) {
+                printf("FAIL: block-sizing bin %d has %d draws (expected exactly 1 "
+                       "for batch_size=N=%d)\n", b, seen[b], N);
+                failures++;
+            }
+        }
+    }
+
+    // ---- Independent per-distribution buffers ----
+    // Fully exhausting the 'uniform' buffer must not disturb the
+    // independently-constructed 'beta' buffer's own stratification.
+    {
+        const int N = 4;
+        RandomNumberManager mgr(N);
+        for (int i = 0; i < N; i++) mgr.get("uniform"); // exhaust 'uniform'
+
+        std::vector<int> beta_bins(N, 0);
+        for (int i = 0; i < N; i++) {
+            double v = mgr.get("beta"); // raw LHS draw in [0,1), untouched buffer
+            int b = std::min(static_cast<int>(v * N), N - 1);
+            beta_bins[b]++;
+        }
+        for (int b = 0; b < N; b++) {
+            if (beta_bins[b] != 1) {
+                printf("FAIL: independent-buffer 'beta' bin %d has %d draws "
+                       "(expected 1; exhausting 'uniform' should not affect it)\n",
+                       b, beta_bins[b]);
+                failures++;
+            }
+        }
+    }
+
+    // ---- Refill after a distribution buffer is exhausted ----
+    // Drawing batch_size+1 values from the same distribution forces a
+    // refill; the post-refill batch must again be a valid, fully
+    // stratified batch of size N (not empty, truncated, or garbage).
+    {
+        const int N = 6;
+        RandomNumberManager mgr(N);
+        for (int i = 0; i < N; i++) mgr.get("normal"); // exhaust first batch
+
+        std::vector<int> post_refill_bins(N, 0);
+        for (int i = 0; i < N; i++) {
+            double v = mgr.get("normal"); // triggers refill on first call, then reads it
+            if (v < 0.0 || v > 1.0) {
+                printf("FAIL: post-refill draw %d out of [0,1] range: %.6f\n", i, v);
+                failures++;
+                continue;
+            }
+            int b = std::min(static_cast<int>(v * N), N - 1);
+            post_refill_bins[b]++;
+        }
+        for (int b = 0; b < N; b++) {
+            if (post_refill_bins[b] != 1) {
+                printf("FAIL: post-refill bin %d has %d draws (expected exactly 1)\n",
+                       b, post_refill_bins[b]);
+                failures++;
+            }
+        }
+    }
+
     if (failures == 0) {
         printf("PASS: all random_manager tests (%d checks)\n", 18);
         return 0;

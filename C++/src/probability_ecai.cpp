@@ -135,13 +135,16 @@ int main(int argc, char* argv[]) {
             N = std::atoi(arg.c_str());
         }
     }
-    if (N < 1) { printf("Invalid value for N, using default of 10000.\n"); N = 10000; }
+    if (N <= 0) {
+        fprintf(stderr, "Error: N must be a positive integer (got %d).\n", N);
+        return 1;
+    }
 
     printf("\nEvaluating the 96th percentile probability at ECAi from occupancy_params for each category (N=%d):\n\n", N);
     printf("| %-20s | %15s | %20s |\n", "Category", "ECAi (L/s/p)", "96th per P (%)");
     printf("|%s|%s|%s|\n", std::string(22, '-').c_str(), std::string(17, '-').c_str(), std::string(22, '-').c_str());
 
-    RandomNumberManager rng;
+    RandomNumberManager rng(static_cast<std::size_t>(N));
     struct Row {
         std::string category;
         std::string ecai_str;

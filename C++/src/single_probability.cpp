@@ -57,7 +57,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (N < 1) { printf("Invalid N, using default 10000.\n"); N = 10000; }
+    if (N <= 0) {
+        fprintf(stderr, "Error: N must be a positive integer (got %d).\n", N);
+        return 1;
+    }
 
     auto it = occupancy_params.find(category);
     if (it == occupancy_params.end()) {
@@ -73,7 +76,7 @@ int main(int argc, char* argv[]) {
     double comm_rate = (community_rate >= 0) ? community_rate : 0;  // 0 means use default
     bool use_default_comm = (community_rate < 0);
 
-    RandomNumberManager rng;
+    RandomNumberManager rng(static_cast<std::size_t>(N));
     std::vector<double> probabilities;
     probabilities.reserve(N);
     int zero_infectors_count = 0;

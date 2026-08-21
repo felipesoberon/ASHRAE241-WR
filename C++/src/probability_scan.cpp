@@ -35,9 +35,9 @@ int main(int argc, char* argv[]) {
             N = std::atoi(arg.c_str());
         }
     }
-    if (N < 1) {
-        printf("Invalid value for N, using default of 10000.\n");
-        N = 10000;
+    if (N <= 0) {
+        fprintf(stderr, "Error: N must be a positive integer (got %d).\n", N);
+        return 1;
     }
 
     double target_prob = 0.001;
@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
     printf("| %-20s | %28s |\n", "Category", "Min ECAi (L/s/person)");
     printf("|%s|%s|\n", std::string(22, '-').c_str(), std::string(30, '-').c_str());
 
-    RandomNumberManager rng;
+    RandomNumberManager rng(static_cast<std::size_t>(N));
     struct Row {
         std::string category;
         std::string ecai_str;

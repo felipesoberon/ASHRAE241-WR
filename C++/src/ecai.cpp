@@ -42,9 +42,9 @@ int main(int argc, char* argv[]) {
             N = std::atoi(arg.c_str());
         }
     }
-    if (N < 1) {
-        printf("Invalid argument for number of simulations. Using default N = 10000.\n");
-        N = 10000;
+    if (N <= 0) {
+        fprintf(stderr, "Error: N must be a positive integer (got %d).\n", N);
+        return 1;
     }
 
     double target_P = 0.001;
@@ -59,7 +59,7 @@ int main(int argc, char* argv[]) {
            "Category", "ECAi (L/s/p)", "Round (L/s/p)", "Round (CFM/p)", "Zero Inf. (%)");
     printf("%s\n", line.c_str());
 
-    RandomNumberManager rng;
+    RandomNumberManager rng(static_cast<std::size_t>(N));
     struct Row {
         std::string category;
         std::string p96_str;
