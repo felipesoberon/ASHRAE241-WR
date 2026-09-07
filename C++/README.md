@@ -85,15 +85,16 @@ Scan for minimum ECAi:
 
 ECAi uncertainty study:
 
-    ./build/ecai_uncertainty_study [--method replicate|bootstrap|order-statistic]
+    ./build/ecai_uncertainty_study [--method replicate|bootstrap|order-statistic|reproduction]
                                   [--category NAME] [--simulations N]
                                   [--repeats R] [--resamples B]
 
-This standalone study supports replicate, bootstrap, and order-statistic
-methods for any occupancy category. Defaults are 25 replicates of 10,000
-simulations for the `Patient` category. Results are written to
+This standalone study supports replicate, bootstrap, order-statistic and
+reproduction methods for any occupancy category. Defaults are 25 replicates of
+10,000 simulations for the `Patient` category. Results are written to
 `ecai_uncertainty_study_results/` relative to the executable's working
-directory. The study is not registered as a CTest test.
+directory; reproduction mode writes to `ecai_reproduction_study_results/`.
+The study is not registered as a CTest test.
 
 Community infection rate options: `--community-rate-general` sets the rate for
 general spaces (default 1%) and `--community-rate-healthcare` for healthcare
@@ -184,6 +185,17 @@ Architecture
   mainGUI_C++.py             Tkinter GUI (C++ engine via WSL)
   tests/                     Unit tests + cross-validation
                              (test_qer_fitted for fitted distributions)
+
+Reproduction sampling mode
+---------------------------
+
+`ecai_uncertainty_study --method reproduction` uses the repository's
+per-distribution-family LHS path -- the same sampling design as the other
+methods; there is no alternative sampling scheme to select. It reproduces the
+study settings (community rates, mask condition, deterministically seeded
+replicates, requested percentiles) rather than an alternative LHS
+construction, and writes metadata and CSV results under
+`ecai_reproduction_study_results`.
 
 Binary raw data format (--save-all)
 ------------------------------------

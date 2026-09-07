@@ -46,9 +46,25 @@
 // CI. Binomial tail probabilities are computed exactly via the regularized
 // incomplete beta function (P(K<=k) = I_{1-p}(N-k, k+1)), not simulated.
 //
+// reproduction mode: a dedicated path for the reproduction study. It runs R independent
+// replicates (default 500) of N simulations (default 10,000) per occupancy
+// category, and for each replicate records the interpolated ECAi at every
+// percentile in --percentiles (default 0.96,0.963). Unlike the other three
+// modes it takes explicit community infection rates for the general and
+// healthcare groups (defaults 0.01 and 0.03125), applies a category-specific
+// mask condition (--mask-preset / --mask-efficiency), and seeds each
+// replicate deterministically (--seed base; replicate r uses base + r).
+// Across the R replicates it reports the exact unrounded mean, sample
+// standard deviation, standard error and two-sided 95% Student-t CI for each
+// requested percentile -- no 5 L/s/person ceiling is applied anywhere. It
+// writes to its own results directory with its own filenames, so the
+// replicate/bootstrap/order-statistic outputs are untouched.
+//
+// IMPORTANT -- LHS scheme. Reproduction mode uses the existing
+// per-distribution-family LHS; there is no alternative sampling scheme.
 // N is configurable via --simulations N (exact simulation count in all
-// three modes); R (replicate mode only) via --repeats R; B (bootstrap mode
-// only) via --resamples B. --repeats and --resamples are not valid outside
+// modes); R via --repeats R (replicate and reproduction modes only); B
+// (bootstrap mode only) via --resamples B. --repeats and --resamples are not valid outside
 // their respective modes. With no arguments the defaults (method=replicate,
 // N=10000, R=25) reproduce the original fixed-constant Patient-only
 // behavior exactly. The occupancy category is configurable via --category
@@ -74,6 +90,8 @@
 #include <iomanip>
 #include <cstring>
 #include <random>
+#include <cerrno>
+#include <cstdint>
 
 namespace {
 
@@ -82,6 +100,15 @@ constexpr const char* kDefaultMethod   = "replicate";
 constexpr int    kDefaultN          = 10000;
 constexpr int    kDefaultReplicates = 25;
 constexpr int    kDefaultResamples  = 2000;
+constexpr int    kReproDefaultReplicates = 500;
+constexpr double kReproDefaultRateGeneral    = 0.01;
+constexpr double kReproDefaultRateHealthcare = 0.03125;
+constexpr const char* kReproDefaultPercentiles = "0.96,0.963";
+constexpr const char* kReproOutDir = "ecai_reproduction_study_results";
+// One-line description of the sampling design actually used, recorded in
+// every reproduction output so the deviation from the notebook is explicit.
+constexpr const char* kFamilyLhsSchemeNote =
+    "repository per-distribution-family LHS (one stratified buffer per distribution family)";
 constexpr double kTargetProb   = 0.001;
 constexpr double kPercentile   = 0.96;
 constexpr double kConfidenceLevel = 0.95;
@@ -228,21 +255,118 @@ double run_replicate(int n, const std::string& category) {
     return interpolated_percentile(ecai_list, kPercentile);
 }
 
+// ---------------------------------------------------------------------------
+// Reproduction mode helpers
+// ---------------------------------------------------------------------------
+
+// Settings for one reproduction run. Every field is CLI-configurable; the
+// defaults are the reproduction settings.
+struct ReproductionConfig {
+    int    n = kDefaultN;
+    double community_rate_general     = kReproDefaultRateGeneral;
+    double community_rate_healthcare  = kReproDefaultRateHealthcare;
+    // mask_override=true forces mask_efficiency on every category (this is
+    // how --mask-efficiency 0 is expressed). Otherwise greg_email_masks
+    // selects between Greg's email condition and the model.h defaults.
+    bool   mask_override    = false;
+    double mask_efficiency  = 0.0;
+    bool   greg_email_masks = true;
+    std::uint64_t base_seed = 0;
+};
+
+// The reproduction email condition: no mask for Patient and Resident rooms; Exam,
+// Group treatment and Waiting rooms keep their model.h mask efficiency.
+// General (non-healthcare) categories have a 0 default already.
+bool is_greg_unmasked_healthcare(const std::string& category) {
+    return category == "Patient" || category == "Resident";
+}
+
+double resolve_mask_efficiency(const ReproductionConfig& cfg,
+                               const std::string& category) {
+    if (cfg.mask_override) return cfg.mask_efficiency;
+    if (cfg.greg_email_masks && is_greg_unmasked_healthcare(category)) return 0.0;
+    return get_occupancy_parameters(category).mask_eff;
+}
+
+double resolve_reproduction_rate(const ReproductionConfig& cfg,
+                                 const std::string& category) {
+    return is_healthcare_category(category) ? cfg.community_rate_healthcare
+                                            : cfg.community_rate_general;
+}
+
+// One reproduction replicate: cfg.n simulations of `category` from a
+// RandomNumberManager seeded with `seed`, with the community rate and mask
+// efficiency overridden per the configuration. Returns the exact
+// (non-rounded) ECAi values, ascending-sorted. The model call sequence is
+// the same sample_parameters -> compute_ECAi path the other modes use; only
+// par.mask_efficiency (a plain struct field) and the community-rate
+// override argument differ, so no model API is changed.
+std::vector<double> generate_reproduction_values(const ReproductionConfig& cfg,
+                                                 const std::string& category,
+                                                 std::uint64_t seed) {
+    RandomNumberManager rng(static_cast<std::size_t>(cfg.n), seed);
+    const double comm_rate = resolve_reproduction_rate(cfg, category);
+    const double mask_eff  = resolve_mask_efficiency(cfg, category);
+    std::vector<double> values;
+    values.reserve(static_cast<std::size_t>(cfg.n));
+    for (int i = 0; i < cfg.n; i++) {
+        SimParameters par = sample_parameters(rng, category);
+        par.mask_efficiency = mask_eff;
+        auto [ecai_val, _infected_flag] = compute_ECAi(
+            par, kTargetProb, rng, category,
+            kRequireInfectors, comm_rate, QERDistribution{});
+        values.push_back(ecai_val);
+    }
+    std::sort(values.begin(), values.end());
+    return values;
+}
+
+// Compact tag for a percentile fraction, used in CSV column names:
+// 0.96 -> "0.96", 0.963 -> "0.963".
+std::string percentile_tag(double p) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", p);
+    return std::string(buf);
+}
+
 void print_usage(const char* prog) {
     std::fprintf(stderr,
-        "Usage: %s [--method replicate|bootstrap|order-statistic] [--simulations N]\n"
-        "           [--repeats R] [--resamples B] [--category NAME]\n"
-        "  --method replicate|bootstrap|order-statistic\n"
+        "Usage: %s [--method replicate|bootstrap|order-statistic|reproduction]\n"
+        "           [--simulations N] [--repeats R] [--resamples B] [--category NAME]\n"
+        "           [--percentiles LIST] [--seed S] [--mask-preset PRESET]\n"
+        "           [--mask-efficiency V] [--community-rate-general V]\n"
+        "           [--community-rate-healthcare V]\n"
+        "  --method replicate|bootstrap|order-statistic|reproduction\n"
         "                    Estimation method (default %s)\n"
         "  --simulations N   Simulations per replicate; original sample size in\n"
         "                    bootstrap mode; exact simulation count in\n"
         "                    order-statistic mode (positive integer, default %d)\n"
-        "  --repeats R       Number of replicates; replicate mode only (positive\n"
-        "                    integer >= 2, default %d)\n"
+        "  --repeats R       Number of replicates; replicate and reproduction modes\n"
+        "                    only (positive integer >= 2, default %d in replicate\n"
+        "                    mode, %d in reproduction mode)\n"
         "  --resamples B     Number of bootstrap resamples; bootstrap mode only\n"
         "                    (positive integer >= 2, default %d)\n"
-        "  --category NAME   Occupancy category (default %s)\n",
-        prog, kDefaultMethod, kDefaultN, kDefaultReplicates, kDefaultResamples, kDefaultCategory);
+        "  --category NAME   Occupancy category (default %s); reproduction mode also\n"
+        "                    accepts 'all' to sweep every category in order\n",
+        prog, kDefaultMethod, kDefaultN, kDefaultReplicates,
+        kReproDefaultReplicates, kDefaultResamples, kDefaultCategory);
+    std::fprintf(stderr,
+        "\nReproduction mode only (rejected with any other --method):\n"
+        "  --percentiles LIST          Comma-separated percentile fractions in (0,1),\n"
+        "                              e.g. 0.96,0.963 (default %s)\n"
+        "  --seed S                    Base seed, non-negative integer (default 0);\n"
+        "                              replicate r uses seed S + r\n"
+        "  --mask-preset PRESET        greg-email (default): no mask for Patient and\n"
+        "                              Resident, model.h default elsewhere;\n"
+        "                              category-default: model.h values unchanged\n"
+        "  --mask-efficiency V         Force mask efficiency V in [0,1] for every\n"
+        "                              category; mutually exclusive with --mask-preset\n"
+        "  --community-rate-general V     Rate in [0,1] for general spaces (default %g)\n"
+        "  --community-rate-healthcare V  Rate in [0,1] for healthcare spaces\n"
+        "                                 (Exam, Group, Patient, Resident, Waiting;\n"
+        "                                 default %g)\n",
+        kReproDefaultPercentiles, kReproDefaultRateGeneral,
+        kReproDefaultRateHealthcare);
     std::fprintf(stderr, "Available categories:");
     for (const auto& k : category_order)
         std::fprintf(stderr, " %s", k.c_str());
@@ -260,6 +384,75 @@ bool parse_positive_int(const char* s, int* out) {
     return true;
 }
 
+// Strict double parser: the whole string must be consumed and the value
+// must be finite. Returns true on success.
+bool parse_double_strict(const char* s, double* out) {
+    if (s == nullptr || s[0] == '\0') return false;
+    char* end = nullptr;
+    errno = 0;
+    double v = std::strtod(s, &end);
+    if (end == s || *end != '\0') return false;
+    if (errno == ERANGE || !std::isfinite(v)) return false;
+    *out = v;
+    return true;
+}
+
+// Strict unsigned 64-bit parser (for --seed). Rejects signs and trailing text.
+bool parse_uint64_strict(const char* s, std::uint64_t* out) {
+    if (s == nullptr || s[0] == '\0') return false;
+    for (const char* c = s; *c != '\0'; c++) {
+        if (*c < '0' || *c > '9') return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    unsigned long long v = std::strtoull(s, &end, 10);
+    if (end == s || *end != '\0' || errno == ERANGE) return false;
+    *out = static_cast<std::uint64_t>(v);
+    return true;
+}
+
+// Parses a comma-separated list of percentile fractions, each strictly
+// inside (0, 1). Rejects empty entries, duplicates, and out-of-range values.
+// `error` receives a human-readable reason on failure.
+bool parse_percentile_list(const std::string& spec, std::vector<double>* out,
+                           std::string* error) {
+    out->clear();
+    std::size_t pos = 0;
+    while (true) {
+        std::size_t comma = spec.find(',', pos);
+        std::string token = spec.substr(pos, comma == std::string::npos
+                                             ? std::string::npos : comma - pos);
+        if (token.empty()) {
+            *error = "empty percentile entry";
+            return false;
+        }
+        double v = 0;
+        if (!parse_double_strict(token.c_str(), &v)) {
+            *error = "'" + token + "' is not a number";
+            return false;
+        }
+        if (!(v > 0.0 && v < 1.0)) {
+            *error = "'" + token + "' is out of range; percentiles are "
+                     "fractions strictly between 0 and 1 (use 0.963, not 96.3)";
+            return false;
+        }
+        for (double existing : *out) {
+            if (existing == v) {
+                *error = "duplicate percentile '" + token + "'";
+                return false;
+            }
+        }
+        out->push_back(v);
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    if (out->empty()) {
+        *error = "no percentiles given";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -270,6 +463,20 @@ int main(int argc, char** argv) {
     std::string method = kDefaultMethod;
     bool repeats_explicit = false;
     bool resamples_explicit = false;
+
+    // Reproduction-mode-only settings (rejected with any other --method).
+    std::string percentile_spec = kReproDefaultPercentiles;
+    bool percentiles_explicit = false;
+    std::uint64_t base_seed = 0;
+    bool seed_explicit = false;
+    std::string mask_preset = "greg-email";
+    bool mask_preset_explicit = false;
+    double mask_efficiency = 0.0;
+    bool mask_efficiency_explicit = false;
+    double rate_general = kReproDefaultRateGeneral;
+    bool rate_general_explicit = false;
+    double rate_healthcare = kReproDefaultRateHealthcare;
+    bool rate_healthcare_explicit = false;
 
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--category") == 0) {
@@ -321,6 +528,73 @@ int main(int argc, char** argv) {
                 return 1;
             }
             resamples_explicit = true;
+        } else if (std::strcmp(argv[i], "--lhs-method") == 0) {
+            std::fprintf(stderr, "Error: --lhs-method is no longer supported; reproduction mode always uses the per-distribution-family LHS.\n");
+            return 1;
+        } else if (std::strcmp(argv[i], "--percentiles") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --percentiles requires an argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            percentile_spec = argv[++i];
+            percentiles_explicit = true;
+        } else if (std::strcmp(argv[i], "--seed") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --seed requires an argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (!parse_uint64_strict(argv[++i], &base_seed)) {
+                std::fprintf(stderr, "Error: --seed must be a non-negative integer, got '%s'.\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+            seed_explicit = true;
+        } else if (std::strcmp(argv[i], "--mask-preset") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --mask-preset requires an argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            mask_preset = argv[++i];
+            mask_preset_explicit = true;
+        } else if (std::strcmp(argv[i], "--mask-efficiency") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --mask-efficiency requires an argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (!parse_double_strict(argv[++i], &mask_efficiency)) {
+                std::fprintf(stderr, "Error: --mask-efficiency must be a number, got '%s'.\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+            mask_efficiency_explicit = true;
+        } else if (std::strcmp(argv[i], "--community-rate-general") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --community-rate-general requires an argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (!parse_double_strict(argv[++i], &rate_general)) {
+                std::fprintf(stderr, "Error: --community-rate-general must be a number, got '%s'.\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+            rate_general_explicit = true;
+        } else if (std::strcmp(argv[i], "--community-rate-healthcare") == 0) {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --community-rate-healthcare requires an argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            if (!parse_double_strict(argv[++i], &rate_healthcare)) {
+                std::fprintf(stderr, "Error: --community-rate-healthcare must be a number, got '%s'.\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+            rate_healthcare_explicit = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -331,14 +605,17 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (method != "replicate" && method != "bootstrap" && method != "order-statistic") {
-        std::fprintf(stderr, "Error: --method must be 'replicate', 'bootstrap', or 'order-statistic', got '%s'.\n", method.c_str());
+    const bool is_reproduction = (method == "reproduction");
+
+    if (method != "replicate" && method != "bootstrap" &&
+        method != "order-statistic" && !is_reproduction) {
+        std::fprintf(stderr, "Error: --method must be 'replicate', 'bootstrap', 'order-statistic', or 'reproduction', got '%s'.\n", method.c_str());
         print_usage(argv[0]);
         return 1;
     }
 
-    if (method != "replicate" && repeats_explicit) {
-        std::fprintf(stderr, "Error: --repeats applies to replicate mode only; it is not valid with --method %s.\n", method.c_str());
+    if (method != "replicate" && !is_reproduction && repeats_explicit) {
+        std::fprintf(stderr, "Error: --repeats applies to replicate and reproduction modes only; it is not valid with --method %s.\n", method.c_str());
         print_usage(argv[0]);
         return 1;
     }
@@ -348,10 +625,76 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (method == "replicate" && replicate_count < 2) {
+    // Reproduction-only options must not silently do nothing in another mode.
+    if (!is_reproduction) {
+        struct { bool given; const char* name; } repro_only[] = {
+            {percentiles_explicit,     "--percentiles"},
+            {seed_explicit,            "--seed"},
+            {mask_preset_explicit,     "--mask-preset"},
+            {mask_efficiency_explicit, "--mask-efficiency"},
+            {rate_general_explicit,    "--community-rate-general"},
+            {rate_healthcare_explicit, "--community-rate-healthcare"},
+        };
+        for (const auto& opt : repro_only) {
+            if (opt.given) {
+                std::fprintf(stderr, "Error: %s applies to reproduction mode only; it is not valid with --method %s.\n",
+                             opt.name, method.c_str());
+                print_usage(argv[0]);
+                return 1;
+            }
+        }
+    }
+
+    // Reproduction mode uses its own replicate default (Greg's 500).
+    if (is_reproduction && !repeats_explicit) {
+        replicate_count = kReproDefaultReplicates;
+    }
+
+    if ((method == "replicate" || is_reproduction) && replicate_count < 2) {
         std::fprintf(stderr, "Error: --repeats must be at least 2 (need df >= 1 for the Student-t CI), got %d.\n",
                      replicate_count);
         return 1;
+    }
+
+    // Reproduction-mode value validation.
+    std::vector<double> repro_percentiles;
+    if (is_reproduction) {
+        if (mask_preset_explicit && mask_efficiency_explicit) {
+            std::fprintf(stderr, "Error: --mask-preset and --mask-efficiency are mutually exclusive.\n");
+            print_usage(argv[0]);
+            return 1;
+        }
+        if (mask_preset != "greg-email" && mask_preset != "category-default") {
+            std::fprintf(stderr, "Error: --mask-preset must be 'greg-email' or 'category-default', got '%s'.\n",
+                         mask_preset.c_str());
+            print_usage(argv[0]);
+            return 1;
+        }
+        if (mask_efficiency_explicit && !(mask_efficiency >= 0.0 && mask_efficiency <= 1.0)) {
+            std::fprintf(stderr, "Error: --mask-efficiency must be in [0, 1], got %g.\n", mask_efficiency);
+            return 1;
+        }
+        if (!(rate_general >= 0.0 && rate_general <= 1.0)) {
+            std::fprintf(stderr, "Error: --community-rate-general must be in [0, 1], got %g.\n", rate_general);
+            return 1;
+        }
+        if (!(rate_healthcare >= 0.0 && rate_healthcare <= 1.0)) {
+            std::fprintf(stderr, "Error: --community-rate-healthcare must be in [0, 1], got %g.\n", rate_healthcare);
+            return 1;
+        }
+        std::string pct_error;
+        if (!parse_percentile_list(percentile_spec, &repro_percentiles, &pct_error)) {
+            std::fprintf(stderr, "Error: --percentiles: %s.\n", pct_error.c_str());
+            print_usage(argv[0]);
+            return 1;
+        }
+        // Guard against integer overflow of base_seed + (replicate_count - 1).
+        if (base_seed > std::numeric_limits<std::uint64_t>::max() -
+                        static_cast<std::uint64_t>(replicate_count - 1)) {
+            std::fprintf(stderr, "Error: --seed %llu is too large for %d replicates (seed + repeats - 1 overflows).\n",
+                         static_cast<unsigned long long>(base_seed), replicate_count);
+            return 1;
+        }
     }
     if (method == "bootstrap" && resample_count < 2) {
         std::fprintf(stderr, "Error: --resamples must be at least 2 (need >= 2 for a percentile CI), got %d.\n",
@@ -364,17 +707,242 @@ int main(int argc, char** argv) {
         print_usage(argv[0]);
         return 1;
     }
-    if (occupancy_params.find(category) == occupancy_params.end()) {
+    // Reproduction mode additionally accepts the literal "all", which sweeps
+    // every category in category_order.
+    const bool repro_all_categories = (is_reproduction && category == "all");
+    if (!repro_all_categories &&
+        occupancy_params.find(category) == occupancy_params.end()) {
         std::fprintf(stderr, "Error: '%s' is not a valid category.\n", category.c_str());
         std::fprintf(stderr, "Available categories:");
         for (const auto& k : category_order)
             std::fprintf(stderr, " %s", k.c_str());
+        if (is_reproduction) std::fprintf(stderr, " all");
         std::fprintf(stderr, "\n");
         return 1;
     }
 
     const int kN = sim_count;
     const bool is_default_category = (category == kDefaultCategory);
+
+    // --- Reproduction mode -------------------------------------------
+    // Handled before the legacy out_dir is created so that the existing
+    // ecai_uncertainty_study_results/ directory and filenames are untouched.
+    if (is_reproduction) {
+        ReproductionConfig cfg;
+        cfg.n = kN;
+        cfg.community_rate_general    = rate_general;
+        cfg.community_rate_healthcare = rate_healthcare;
+        cfg.mask_override    = mask_efficiency_explicit;
+        cfg.mask_efficiency  = mask_efficiency;
+        cfg.greg_email_masks = (mask_preset == "greg-email");
+        cfg.base_seed        = base_seed;
+
+        const int kReplicates = replicate_count;
+        const int df = kReplicates - 1;
+        const double t_crit = student_t_critical_975(df);
+        const std::size_t kNumPct = repro_percentiles.size();
+
+        std::vector<std::string> categories;
+        if (repro_all_categories) categories = category_order;
+        else categories.push_back(category);
+
+        const std::string mask_setting = mask_efficiency_explicit
+            ? ("forced " + percentile_tag(mask_efficiency) + " for every category")
+            : ("preset " + mask_preset);
+
+        printf("\nECAi reproduction study\n");
+        printf("  Method:                    reproduction\n");
+        printf("  Categories:                %s\n",
+               repro_all_categories ? "all (25, in model order)" : category.c_str());
+        printf("  Simulations per replicate: %d\n", kN);
+        printf("  Replicates:                %d\n", kReplicates);
+        printf("  Seeds:                     %llu .. %llu (replicate r uses seed + r)\n",
+               static_cast<unsigned long long>(base_seed),
+               static_cast<unsigned long long>(base_seed + kReplicates - 1));
+        printf("  Percentiles:              ");
+        for (double q : repro_percentiles) printf(" %s", percentile_tag(q).c_str());
+        printf("\n");
+        printf("  Target probability:        %.4f (%.2f%%)\n", kTargetProb, kTargetProb * 100);
+        printf("  Community rate general:    %g\n", rate_general);
+        printf("  Community rate healthcare: %g\n", rate_healthcare);
+        printf("  Mask efficiency:           %s\n", mask_setting.c_str());
+        printf("  QER distribution:          jones (full 8-parameter calculation)\n");
+        printf("  Infector mode:             require_infectors=%s (zero-infector draws allowed)\n",
+               kRequireInfectors ? "true" : "false");
+        printf("  Rounding:                  none (exact unrounded L/s/person; the\n");
+        printf("                             5 L/s/person ceiling rule is NOT applied)\n");
+        const char* lhs_note = kFamilyLhsSchemeNote;
+        printf("  LHS scheme:                %s\n\n", lhs_note);
+
+        const std::string repro_out_dir = kReproOutDir;
+        std::filesystem::create_directories(repro_out_dir);
+
+        // Combined per-category x per-percentile summary (also written for a
+        // single category, since it is the ASHRAE 241 comparison table).
+        const std::string combined_path =
+            std::string(repro_out_dir) + "/reproduction_summary.csv";
+        std::ofstream combined(combined_path);
+        combined << std::fixed << std::setprecision(9);
+        combined << "category,percentile,mean_Lps,stddev_Lps,standard_error_Lps,"
+                    "ci95_lower_Lps,ci95_upper_Lps,min_Lps,max_Lps,"
+                    "ashrae241_published_Lps,diff_vs_published_Lps,"
+                    "abs_diff_le_5,mask_efficiency_applied,community_rate_applied,"
+                    "simulations,replicates,seed_first,seed_last,all_finite\n";
+
+        for (const std::string& cat : categories) {
+            const double mask_applied = resolve_mask_efficiency(cfg, cat);
+            const double rate_applied = resolve_reproduction_rate(cfg, cat);
+            const double published = get_occupancy_parameters(cat).ECAi;
+
+            // per_pct[j][r] = percentile j of replicate r
+            std::vector<std::vector<double>> per_pct(kNumPct);
+            for (auto& v : per_pct) v.reserve(static_cast<std::size_t>(kReplicates));
+
+            printf("Category %s (mask %.4g, community rate %g, ASHRAE 241 published %g L/s/p)\n",
+                   cat.c_str(), mask_applied, rate_applied, published);
+
+            const int progress_every = std::max(1, kReplicates / 20);
+            for (int r = 0; r < kReplicates; r++) {
+                const std::uint64_t seed = base_seed + static_cast<std::uint64_t>(r);
+                std::vector<double> sorted_values =
+                    generate_reproduction_values(cfg, cat, seed);
+                std::sort(sorted_values.begin(), sorted_values.end());
+                for (std::size_t j = 0; j < kNumPct; j++) {
+                    per_pct[j].push_back(
+                        interpolated_percentile(sorted_values, repro_percentiles[j]));
+                }
+                const bool show = (kReplicates <= 25) || ((r + 1) % progress_every == 0)
+                                  || (r + 1 == kReplicates);
+                if (show) {
+                    printf("  Replicate %4d/%d (seed %llu):", r + 1, kReplicates,
+                           static_cast<unsigned long long>(seed));
+                    for (std::size_t j = 0; j < kNumPct; j++) {
+                        printf("  p%s = %.6f", percentile_tag(repro_percentiles[j]).c_str(),
+                               per_pct[j].back());
+                    }
+                    printf(" L/s/person\n");
+                }
+            }
+
+            bool all_finite = true;
+            for (const auto& col : per_pct)
+                for (double v : col)
+                    if (!std::isfinite(v)) { all_finite = false; break; }
+            const bool row_count_ok = std::all_of(
+                per_pct.begin(), per_pct.end(),
+                [&](const std::vector<double>& col) {
+                    return static_cast<int>(col.size()) == kReplicates;
+                });
+
+            // Per-replicate CSV: one row per replicate, one column per percentile.
+            const std::string replicates_path = repro_out_dir +
+                "/reproduction_" + cat + "_replicates.csv";
+            std::ofstream rep_csv(replicates_path);
+            rep_csv << std::fixed << std::setprecision(9);
+            rep_csv << "replicate,seed";
+            for (double q : repro_percentiles)
+                rep_csv << ",ECAi_p" << percentile_tag(q) << "_Lps";
+            rep_csv << "\n";
+            for (int r = 0; r < kReplicates; r++) {
+                rep_csv << (r + 1) << ","
+                        << (base_seed + static_cast<std::uint64_t>(r));
+                for (std::size_t j = 0; j < kNumPct; j++)
+                    rep_csv << "," << per_pct[j][r];
+                rep_csv << "\n";
+            }
+            rep_csv.close();
+
+            // Per-category summary CSV: run metadata then per-percentile stats.
+            const std::string summary_path = repro_out_dir +
+                "/reproduction_" + cat + "_summary.csv";
+            std::ofstream summary(summary_path);
+            summary << "parameter,value\n";
+            summary << "method,reproduction\n";
+            summary << "category," << cat << "\n";
+            summary << "simulations_per_replicate," << kN << "\n";
+            summary << "replicates," << kReplicates << "\n";
+            summary << "seed_first," << base_seed << "\n";
+            summary << "seed_last," << (base_seed + kReplicates - 1) << "\n";
+            summary << "percentiles,";
+            for (std::size_t j = 0; j < kNumPct; j++)
+                summary << (j ? " " : "") << percentile_tag(repro_percentiles[j]);
+            summary << "\n";
+            summary << "target_probability," << kTargetProb << "\n";
+            summary << "require_infectors," << (kRequireInfectors ? "true" : "false") << "\n";
+            summary << "qer_distribution,jones\n";
+            summary << "mask_setting," << mask_setting << "\n";
+            summary << "mask_efficiency_applied," << mask_applied << "\n";
+            summary << "community_rate_general," << rate_general << "\n";
+            summary << "community_rate_healthcare," << rate_healthcare << "\n";
+            summary << "community_rate_applied," << rate_applied << "\n";
+            summary << "is_healthcare_category," << (is_healthcare_category(cat) ? "true" : "false") << "\n";
+            summary << "ashrae241_published_Lps," << published << "\n";
+            summary << "rounding,none (exact unrounded L/s/person)\n";
+            summary << "lhs_scheme," << lhs_note << "\n";
+            summary << "row_count_ok," << (row_count_ok ? "true" : "false") << "\n";
+            summary << "all_finite," << (all_finite ? "true" : "false") << "\n";
+            summary << "\n";
+            summary << "percentile,mean_Lps,stddev_Lps,standard_error_Lps,"
+                       "ci95_lower_Lps,ci95_upper_Lps,min_Lps,max_Lps,"
+                       "ashrae241_published_Lps,diff_vs_published_Lps\n";
+            summary << std::fixed << std::setprecision(9);
+
+            printf("\n  Summary across %d replicates (exact, unrounded):\n", kReplicates);
+            for (std::size_t j = 0; j < kNumPct; j++) {
+                const auto& col = per_pct[j];
+                double mean = std::numeric_limits<double>::quiet_NaN();
+                double sd = mean, se = mean, ci_lo = mean, ci_hi = mean;
+                double vmin = mean, vmax = mean;
+                if (all_finite && row_count_ok) {
+                    double sum = 0;
+                    for (double v : col) sum += v;
+                    mean = sum / kReplicates;
+                    double ss = 0;
+                    for (double v : col) ss += (v - mean) * (v - mean);
+                    sd = std::sqrt(ss / (kReplicates - 1));
+                    se = sd / std::sqrt(static_cast<double>(kReplicates));
+                    ci_lo = mean - t_crit * se;
+                    ci_hi = mean + t_crit * se;
+                    vmin = *std::min_element(col.begin(), col.end());
+                    vmax = *std::max_element(col.begin(), col.end());
+                }
+                const double diff = mean - published;
+                const std::string tag = percentile_tag(repro_percentiles[j]);
+
+                printf("    p%-6s mean = %.6f  sd = %.6f  se = %.6f  95%% CI (t, df=%d) = [%.6f, %.6f]\n",
+                       tag.c_str(), mean, sd, se, df, ci_lo, ci_hi);
+                printf("            min = %.6f  max = %.6f  published = %g  diff = %+.6f L/s/person\n",
+                       vmin, vmax, published, diff);
+
+                summary << tag << "," << mean << "," << sd << "," << se << ","
+                        << ci_lo << "," << ci_hi << "," << vmin << "," << vmax << ","
+                        << published << "," << diff << "\n";
+
+                combined << cat << "," << tag << "," << mean << "," << sd << ","
+                         << se << "," << ci_lo << "," << ci_hi << "," << vmin << ","
+                         << vmax << "," << published << "," << diff << ","
+                         << ((std::isfinite(diff) && std::fabs(diff) <= 5.0) ? "true" : "false")
+                         << "," << mask_applied << "," << rate_applied << ","
+                         << kN << "," << kReplicates << "," << base_seed << ","
+                         << (base_seed + kReplicates - 1) << ","
+                         << ((all_finite && row_count_ok) ? "true" : "false") << "\n";
+            }
+            summary.close();
+
+            printf("  Sanity check: %d replicates per percentile, all finite = %s\n",
+                   kReplicates, (all_finite && row_count_ok) ? "true" : "false");
+            printf("  Written: %s\n           %s\n\n",
+                   replicates_path.c_str(), summary_path.c_str());
+        }
+
+        combined.close();
+        printf("Combined comparison table written to:\n  %s\n", combined_path.c_str());
+        printf("\nNote: %s.\n"
+               "This mode uses the repository family-LHS construction; values are\n"
+               "not expected to match an external notebook exactly.\n",
+               lhs_note);
+        return 0;
+    }
 
     // Output directory and filename stems. Patient (the original default)
     // keeps the original replicate-mode filenames for backward

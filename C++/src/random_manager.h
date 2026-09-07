@@ -21,10 +21,16 @@ int    binomial_ppf(double u, int n, double p);
 // ------------------------------------------------------------------
 class RandomNumberManager {
 public:
+    // Unseeded: the engine is seeded from std::random_device, as before.
     explicit RandomNumberManager(std::size_t batch_size = 1000000);
+    // Seeded: identical behavior, but the engine starts from `seed`, so the
+    // whole LHS buffer sequence is reproducible. Used by the reproduction
+    // study to run deterministic seeded replicates.
+    RandomNumberManager(std::size_t batch_size, std::uint64_t seed);
     double get(const std::string& dist);
 
 private:
+    void fill_all_buffers();
     std::size_t batch_size_;
     std::map<std::string, std::vector<double>> buffers_;
     std::map<std::string, std::size_t> indices_;
