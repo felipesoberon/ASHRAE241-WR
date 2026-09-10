@@ -1,0 +1,227 @@
+#include "model.h"
+
+#include <cmath>
+#include <stdexcept>
+#include <string>
+
+namespace ecai_cpp2 {
+namespace model {
+
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+void require_finite(double value, const char* field_name) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument(std::string("InfectorParameters.") + field_name +
+                                     " must be finite");
+    }
+}
+
+void require_positive(double value, const char* field_name) {
+    require_finite(value, field_name);
+    if (!(value > 0.0)) {
+        throw std::invalid_argument(std::string("InfectorParameters.") + field_name +
+                                     " must be strictly positive");
+    }
+}
+
+void require_in_range(double value, double lo, double hi, const char* field_name) {
+    require_finite(value, field_name);
+    if (value < lo || value > hi) {
+        throw std::invalid_argument(std::string("InfectorParameters.") + field_name +
+                                     " must lie within its Table 1 hard bounds [" +
+                                     std::to_string(lo) + ", " + std::to_string(hi) + "]");
+    }
+}
+
+
+// Stage 9 validation helpers. Separate from the Stage 8 ones only so the
+// thrown message names ECAiInputs rather than InfectorParameters; the
+// policy is identical (finiteness first, then the physical domain, and no
+// input is ever clamped into range).
+void require_ecai_finite(double value, const char* field_name) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument(std::string("ECAiInputs.") + field_name +
+                                     " must be finite");
+    }
+}
+
+void require_ecai_positive(double value, const char* field_name) {
+    require_ecai_finite(value, field_name);
+    if (!(value > 0.0)) {
+        throw std::invalid_argument(std::string("ECAiInputs.") + field_name +
+                                     " must be strictly positive");
+    }
+}
+
+void require_ecai_in_range(double value, double lo, double hi, const char* field_name) {
+    require_ecai_finite(value, field_name);
+    if (value < lo || value > hi) {
+        throw std::invalid_argument(std::string("ECAiInputs.") + field_name +
+                                     " must lie within [" + std::to_string(lo) + ", " +
+                                     std::to_string(hi) + "]");
+    }
+}
+
+// One supplied quanta emission rate: finite and nonnegative. QER_i is a
+// rate of quanta emitted per hour, so a negative value is unphysical and
+// must never silently reduce ECAi. A -0.0 entry is a legitimate zero.
+void require_qer_value(double value, const char* what) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument(std::string(what) + " must be finite");
+    }
+    if (!(value >= 0.0)) {
+        throw std::invalid_argument(std::string(what) + " must be nonnegative");
+    }
+}
+
+// Every computed intermediate must stay finite: an overflow to +/-Inf (or a
+// NaN) is reported rather than returned as an ECAi value.
+void require_finite_intermediate(double value, const char* what) {
+    if (!std::isfinite(value)) {
+        throw std::runtime_error(std::string("ECAi ") + what +
+                                  " is not finite (overflow or invalid intermediate)");
+    }
+}
+
+// Full domain check for the eight ECAi inputs, run before any arithmetic.
+// Bounds: PBR_s / lambda / VOL strictly positive (unbounded lognormal
+// families, MODEL_SPECIFICATION.md section 5 / Table 1, so only positivity
+// is physically required); gamma inside its Table 1 Uniform hard bounds
+// [0.42, 0.61]; I0 a positive count; mu in [0, 1]; D strictly positive;
+// P(I) strictly inside the open interval (0, 1)
+// (IMPLEMENTATION_PLAN.md section 5.2).
+void validate_ecai_inputs(const ECAiInputs& inputs) {
+    require_ecai_positive(inputs.susceptible_pbr_m3h, "susceptible_pbr_m3h");
+    require_ecai_in_range(inputs.gamma_per_h, 0.42, 0.61, "gamma_per_h");
+    require_ecai_positive(inputs.lambda_per_h, "lambda_per_h");
+    require_ecai_positive(inputs.volume_m3, "volume_m3");
+    if (inputs.occupants <= 0) {
+        throw std::invalid_argument("ECAiInputs.occupants must be a positive count");
+    }
+    require_ecai_in_range(inputs.mask_efficiency, 0.0, 1.0, "mask_efficiency");
+    require_ecai_positive(inputs.duration_h, "duration_h");
+    require_ecai_finite(inputs.target_probability, "target_probability");
+    if (!(inputs.target_probability > 0.0) || !(inputs.target_probability < 1.0)) {
+        throw std::invalid_argument(
+            "ECAiInputs.target_probability must lie strictly inside the open interval (0, 1)");
+    }
+}
+
+}  // namespace
+
+QERResult compute_qer(const sampling_plan::InfectorParameters& infector) {
+    require_positive(infector.pbr_m3h, "pbr_m3h");
+    require_positive(infector.c_drop, "c_drop");
+    require_positive(infector.d_bar, "d_bar");
+    require_in_range(infector.evaporation_factor, 2.0, 5.0, "evaporation_factor");
+    require_positive(infector.gvl_copies_per_ml, "gvl_copies_per_ml");
+    require_in_range(infector.viable_fraction, 1e-4, 1e-2, "viable_fraction");
+    require_in_range(infector.rtd, 0.43, 0.65, "rtd");
+    require_in_range(infector.dose_constant, 5.0, 15.0, "dose_constant");
+
+    // Table 3 printed-unit scalings (applied exactly once): C_drop is
+    // sampled/stored in units of x1e4 m^-3; d_bar is sampled/stored in units
+    // of x1e-6 m.
+    const double c_drop_per_m3 = infector.c_drop * 1e4;
+    const double d_bar_m = infector.d_bar * 1e-6;
+
+    // Eq. 5: V*_drop = (pi/6) * (d_bar * E)^3 * C_drop.
+    const double hydrated_diameter_m = d_bar_m * infector.evaporation_factor;
+    const double vdrop =
+        (kPi / 6.0) * hydrated_diameter_m * hydrated_diameter_m * hydrated_diameter_m *
+        c_drop_per_m3;
+
+    // Table 1 footnote: GVL_i is converted to RNA copies m^-3 by x1e6.
+    const double gvl_copies_per_m3 = infector.gvl_copies_per_ml * 1e6;
+
+    // Eq. 4: VER_i = PBR * V*_drop * GVL_i * VF * R.
+    const double ver_virions_per_h = infector.pbr_m3h * vdrop * gvl_copies_per_m3 *
+                                      infector.viable_fraction * kViabilityAfterEmissionR;
+
+    // Eq. 3: QER_i = RTD * VER_i / DK.
+    const double qer_per_h = infector.rtd * ver_virions_per_h / infector.dose_constant;
+
+    QERResult result;
+    result.vdrop = vdrop;
+    result.gvl_copies_per_m3 = gvl_copies_per_m3;
+    result.ver_virions_per_h = ver_virions_per_h;
+    result.qer_per_h = qer_per_h;
+    return result;
+}
+
+
+ECAiResult compute_ecai_from_qer_sum(const ECAiInputs& inputs, double qer_sum_per_h) {
+    validate_ecai_inputs(inputs);
+    require_qer_value(qer_sum_per_h, "ECAi QER_sum");
+
+    // Q_target = -log(1 - target_probability), evaluated as -log1p(-P): the
+    // two are algebraically identical, but log1p keeps full relative
+    // precision for the small target probabilities the standard uses (the
+    // frozen default is 0.001), where forming 1 - P first would discard
+    // low-order bits and, below about 1e-16, collapse to exactly 1.0 and
+    // make the divisor zero. Validation above guarantees 0 < P < 1, so
+    // Q_target is strictly positive and the division below can never be by
+    // zero.
+    const double q_target = -std::log1p(-inputs.target_probability);
+    require_finite_intermediate(q_target, "Q_target");
+
+    // mask_factor = (1 - mu)^2 (Eq. 2), formed by one multiplication so the
+    // factor is applied exactly once.
+    const double one_minus_mu = 1.0 - inputs.mask_efficiency;
+    const double mask_factor = one_minus_mu * one_minus_mu;
+
+    const double term1_m3_per_h =
+        inputs.susceptible_pbr_m3h * inputs.duration_h * mask_factor * qer_sum_per_h / q_target;
+    require_finite_intermediate(term1_m3_per_h, "term1");
+
+    const double term2_m3_per_h = inputs.volume_m3 * (inputs.gamma_per_h + inputs.lambda_per_h);
+    require_finite_intermediate(term2_m3_per_h, "term2");
+
+    const double t_ecai_raw_m3_per_h = term1_m3_per_h - term2_m3_per_h;
+    require_finite_intermediate(t_ecai_raw_m3_per_h, "T_ECAi_raw");
+
+    // Eq. 7: m^3/h -> L/s/person. occupants is a validated positive count,
+    // so the divisor is strictly positive.
+    const double ecai_raw_l_s_person =
+        t_ecai_raw_m3_per_h /
+        (kM3PerHourPerLitrePerSecond * static_cast<double>(inputs.occupants));
+    require_finite_intermediate(ecai_raw_l_s_person, "ECAi_raw");
+
+    ECAiResult result;
+    result.q_target = q_target;
+    result.mask_factor = mask_factor;
+    result.qer_sum_per_h = qer_sum_per_h;
+    result.term1_m3_per_h = term1_m3_per_h;
+    result.term2_m3_per_h = term2_m3_per_h;
+    result.t_ecai_raw_m3_per_h = t_ecai_raw_m3_per_h;
+    result.ecai_raw_l_s_person = ecai_raw_l_s_person;
+    result.clamped = ecai_raw_l_s_person < 0.0;
+    // Only a strictly positive raw value passes through; everything else
+    // becomes exactly +0.0, so a clamped (or -0.0) result can never carry a
+    // negative sign bit into the percentile stage.
+    result.ecai_l_s_person = (ecai_raw_l_s_person > 0.0) ? ecai_raw_l_s_person : 0.0;
+    return result;
+}
+
+ECAiResult compute_ecai(const ECAiInputs& inputs, const std::vector<double>& qer_per_h) {
+    // Plain left-to-right accumulation in the supplied order: the sum is a
+    // deterministic function of the infector ordering the caller fixed, and
+    // no compensated-summation reordering is introduced that the frozen
+    // specification does not call for. Every term is validated nonnegative
+    // and finite first, so the running sum is nondecreasing and can only
+    // leave the finite range by overflowing to +Inf, which is checked.
+    double qer_sum_per_h = 0.0;
+    for (const double qer : qer_per_h) {
+        require_qer_value(qer, "ECAi QER_i");
+        qer_sum_per_h += qer;
+    }
+    if (!std::isfinite(qer_sum_per_h)) {
+        throw std::runtime_error("ECAi QER_sum overflowed while summing the supplied QER values");
+    }
+    return compute_ecai_from_qer_sum(inputs, qer_sum_per_h);
+}
+
+}  // namespace model
+}  // namespace ecai_cpp2
