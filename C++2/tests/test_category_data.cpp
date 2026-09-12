@@ -121,7 +121,7 @@ const Expected kExpected[25] = {
     {"Common space", "Residential", false, 150, 4600, 0.77, 2.5, 0.3, 1.0,
      0.01, 0.0, 0.55, 1.2, 90, 10, 0, 9.8, 1.1, 1.8, 1.1, 25, 0.26},
     {"Dwelling unit", "Residential", false, 6, 540, 0.049, 6.8, 0.0, 6.8, 0.01,
-     0.0, 0.051, 4.3, 15, 70, 15, 40, 1.1, 2.2, 1.1, 15, 0.80},
+     0.0, 0.51, 4.3, 15, 70, 15, 40, 1.1, 2.2, 1.1, 15, 0.80},
 };
 
 const std::string kHealthCareNames[5] = {
@@ -237,13 +237,12 @@ int main() {
         check(convention.i0 == 400, "Convention I0 == 400");
     }
 
-    // Dwelling unit PBR GM uses the publication's printed value, 0.051, per
-    // the D2 adjudication -- not the existing code's 0.51.
+    // Dwelling unit PBR GM uses the publication's Table 3 value, 0.51.
     {
         const std::string dwelling_name = "Dwelling unit";
         const auto& dwelling = ecai_cpp2::lookup_occupancy_category(dwelling_name);
-        check(approx(dwelling.pbr_gm_m3h, 0.051),
-              "Dwelling unit PBR GM is the publication value 0.051, not 0.51");
+        check(approx(dwelling.pbr_gm_m3h, 0.51),
+              "Dwelling unit PBR GM is the publication value 0.51");
     }
 
     // Canonical normalization: case-insensitive; spaces, commas, and hyphens

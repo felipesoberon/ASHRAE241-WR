@@ -357,7 +357,7 @@ folded into the GM/GSD values below by the publication's authors (per §3.4, p. 
 | Lobbies | 0.55 | 1.2 | 90:10:0 | 9.8 | 1.1 | 1.8 | 1.1 |
 | **Residential** | | | | | | | |
 | Common space | 0.55 | 1.2 | 90:10:0 | 9.8 | 1.1 | 1.8 | 1.1 |
-| Dwelling unit | **0.051** | 4.3 | 15:70:15 | 40 | 1.1 | 2.2 | 1.1 |
+| Dwelling unit | **0.51** | 4.3 | 15:70:15 | 40 | 1.1 | 2.2 | 1.1 |
 
 Body text, not a footnote (p. 20, continuing §3.4 immediately below Table 2): "standard deviations are set at 10%
 of the mean for both `d̄` and `C_drop`" — consistent with every GSD of 1.1 shown (a log-normal
@@ -368,12 +368,8 @@ sleeping/sedentary/active occupants in a home per §3.4, p. 19).
 
 **Cross-check against `occupancy_params` (`C++/src/model.cpp` / `Python/model.py`):** every
 `Cdrop_GM`, `Cdrop_GSD`, `d_GM`, `d_GSD`, and `PBR_GSD` value matches for all 25 categories.
-**Exception: Dwelling unit `PBR_GM`.** The publication (Table 3, p. 21) prints **0.051**
-m³ h⁻¹; the existing C++ (`model.cpp` line for `"Dwelling"`) and Python (`model.py`) both use
-**0.51** m³ h⁻¹ — a factor-of-10 difference. Recorded as Discrepancy D2 (§9.2); **the
-publication's 0.051 m³ h⁻¹ is the Jones default; 0.51 m³ h⁻¹ is
-retained only as a documented reference-code discrepancy, not as a default (see §9.2 for the
-full adjudication).**
+**Dwelling unit `PBR_GM`:** Jones et al. Table 3 lists **0.51 m³ h⁻¹**. The Python and C++2
+implementations now use this value; this corrects the previous factor-of-10 value of 0.051 m³ h⁻¹.
 
 ---
 
@@ -470,23 +466,14 @@ quantity — functionally it is `R`. **C++2 decision (C++2-specific):** use the 
 (not `RD`) for this constant in code and documentation, value 1.0. This does not change any
 numeric output.
 
-### D2 — Dwelling unit `PBR_GM`: 0.051 (publication) vs. 0.51 (existing code) — RESOLVED: publication value is the Jones default
+### D2 — Dwelling unit `PBR_GM`: 0.51 (publication) — RESOLVED
 
-Table 3 (p. 21) literally prints `0.051` m³ h⁻¹ for Dwelling unit's breathing-rate geometric
-mean. `C++/src/model.cpp` and `Python/model.py` both use `0.51` m³ h⁻¹ — ten times larger.
-0.51 m³ h⁻¹ is consistent with the tight clustering of every other category's `PBR_GM`
-(0.49–0.77 m³ h⁻¹, Table 3); 0.051 m³ h⁻¹ (≈0.85 L min⁻¹) is far below normal resting human
-minute ventilation (typically ≈6–8 L min⁻¹ ≈ 0.36–0.48 m³ h⁻¹) and would be physiologically
-implausible for any activity level, including sleep. This makes a publication-side decimal
-typo more likely than a code-side error.
+Table 3 (p. 21) lists `0.51` m³ h⁻¹ for the Dwelling unit breathing-rate geometric mean. The Python
+and C++2 implementations now use this value. The previous `0.051` m³ h⁻¹ value was a factor-of-10
+implementation error and is no longer used.
 
-**Resolution:** C++2 uses the publication's printed Table 3 value, `PBR_GM =
-0.051` m³ h⁻¹, as the **Jones default** for the Dwelling unit category — this is what §5–§7
-above already record and cross-check against. The existing code's `0.51` m³ h⁻¹ is **not**
-adopted as a default; it is retained in this document only as a **documented reference-code
-discrepancy** (the value `C++/src/model.cpp` and `Python/model.py` actually use today) and as an
-**optional custom comparison point**, never as the Dwelling unit's default input. Only the Dwelling unit
-category (I0 = 6) is affected.
+**Resolution:** Python and C++2 use the publication value `PBR_GM = 0.51` m³ h⁻¹ for the Dwelling
+unit category. Only the Dwelling unit category (I0 = 6) was affected.
 
 ### D3 — Zero-infector short-circuit changes total draw count relative to the existing implementation (C++2-specific design decision, not a publication discrepancy)
 
@@ -814,7 +801,7 @@ documented numerical evidence and independent approval.
   individual ECAi variation.
 - **RNG/seeds/resources/tolerances:** frozen per §11.2–11.5 above; all explicitly C++2-specific
   engineering decisions, not attributable to Jones et al.
-- **Adjudicated items:** D2 uses the publication value `PBR_GM = 0.051 m³/h` for Dwelling unit;
+- **Adjudicated items:** D2 uses the publication value `PBR_GM = 0.51 m³/h` for Dwelling unit;
   D7 uses full publication category names as canonical identifiers with strict normalized input
   matching and unconditionally accepts exactly the ten explicit legacy aliases listed in D7.
   D1 and D5 remain terminology-only publication inconsistencies with no numeric effect.

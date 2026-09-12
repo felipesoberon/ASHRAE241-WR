@@ -213,7 +213,7 @@ const std::array<OccupancyCategory, 25>& build_categories() {
          6, 540,
          0.049, 6.8, 0.0, 6.8,
          kGeneralCommunityRate, kGeneralMaskEfficiency,
-         0.051, 4.3, 15, 70, 15,
+         0.51, 4.3, 15, 70, 15,
          40, 1.1,
          2.2, 1.1,
          15, 0.80},
