@@ -20,6 +20,7 @@
 #include "seed_manager.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -597,12 +598,12 @@ int main() {
 
     // ---------------------------------------------------------------
     // build_sampling_plan: max_bytes preflight must account for the
-    // simultaneously-live binomial_ppf PMF buffer ((I0+1) doubles), not just
+    // simultaneously-live binomial PMF buffer ((I0+1) doubles), not just
     // the N-length uniform/count vectors. N=1, I0=100, p=.5 needs only 16
-    // bytes for the N-length vectors but 808 additional bytes for the PMF
+    // bytes for the N-length vectors but 808 additional bytes per binomial
     // buffer; with max_simulations/max_total_infectors widened so only the
-    // byte check can fire, and max_bytes=100 (below the true 824-byte peak
-    // but above the under-counted 16-byte figure), this must throw
+    // byte check can fire, and max_bytes=100 (below the true peak but above
+    // the under-counted 16-byte figure), this must throw
     // std::runtime_error before any allocation rather than silently
     // succeeding.
     // ---------------------------------------------------------------
@@ -621,6 +622,59 @@ int main() {
               "build_sampling_plan: max_bytes preflight accounts for the live binomial PMF "
               "buffer (N=1,I0=100,p=.5,max_bytes=100) and throws std::runtime_error before any "
               "allocation");
+    }
+
+    // ---------------------------------------------------------------
+    // build_sampling_plan: max_bytes preflight must also account for the
+    // BinomialPpfTable's retained CDF buffer, not just the PMF buffer.
+    // N=1, I0=100 needs 16 bytes for the N-length vectors plus 2*808 bytes
+    // for the PMF and CDF buffers (1632-byte peak); max_bytes=1000 is above
+    // the PMF-only 824-byte figure but below the true peak, so this must
+    // throw std::runtime_error before any allocation.
+    // ---------------------------------------------------------------
+    {
+        ResourcePolicy policy;
+        policy.max_simulations = std::numeric_limits<std::size_t>::max();
+        policy.max_total_infectors = std::numeric_limits<std::size_t>::max();
+        policy.max_bytes = 1000;
+        bool threw = false;
+        try {
+            build_sampling_plan(seeds, config, 0, 1, 100, 0.5, policy);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw,
+              "build_sampling_plan: max_bytes preflight accounts for the binomial CDF buffer "
+              "(N=1,I0=100,p=.5,max_bytes=1000) and throws std::runtime_error before any "
+              "allocation");
+        policy.max_bytes = 1632;
+        const SamplingPlan plan = build_sampling_plan(seeds, config, 0, 1, 100, 0.5, policy);
+        check(plan.n == 1 && plan.counts.size() == 1,
+              "build_sampling_plan: max_bytes exactly equal to the 16N + 16(I0+1) peak succeeds");
+    }
+
+    // ---------------------------------------------------------------
+    // build_sampling_plan: per-replicate BinomialPpfTable equivalence at
+    // production scale, including a p whose pmf(0) underflows. Every count
+    // must match the single-shot binomial_ppf transform of the same LHS
+    // list, bit-for-bit.
+    // ---------------------------------------------------------------
+    {
+        struct Case { std::size_t n; long long i0; double p; };
+        const Case cases[] = {{5000, 400, 0.01}, {5000, 400, 0.9}, {2000, 400, 0.99}};
+        for (const Case& c : cases) {
+            const SamplingPlan plan = build_sampling_plan(seeds, config, 7, c.n, c.i0, c.p);
+            const std::uint64_t seed = seeds.derive_seed(config, 7, StreamId::infector_count, c.n);
+            const std::vector<double> uniforms = ecai_cpp2::lhs::generate_lhs_1d(c.n, seed);
+            bool equal = plan.counts.size() == uniforms.size();
+            for (std::size_t i = 0; equal && i < uniforms.size(); ++i) {
+                equal = plan.counts[i] ==
+                        ecai_cpp2::distributions::binomial_ppf(uniforms[i], c.i0, c.p);
+            }
+            check(equal, "build_sampling_plan(N=" + std::to_string(c.n) + ",I0=" +
+                             std::to_string(c.i0) + ",p=" + std::to_string(c.p) +
+                             "): table-driven counts equal single-shot binomial_ppf bit-for-bit");
+        }
     }
 
     // ---------------------------------------------------------------
@@ -1602,6 +1656,79 @@ int main() {
         check(property_ok,
               "cursor: over 60 randomized synthetic count vectors, every id is consumed exactly "
               "once, none is unused, and all 11 cursors end exhausted");
+
+        // Direct-indexed cursor path: every take_* must read the value at
+        // the bank position it reports, advance exactly the banks of its
+        // own sizing class by one, and leave the public cursor() accessor
+        // (which still range-checks its BankId) in agreement with the
+        // consumption ids it handed out.
+        {
+            ParameterCursor stepper(banks);
+            bool threw = false;
+            try {
+                stepper.cursor(static_cast<BankId>(55));
+            } catch (const std::invalid_argument&) {
+                threw = true;
+            }
+            check(threw, "cursor: ParameterCursor::cursor rejects an out-of-range BankId");
+
+            bool consistent = true;
+            for (std::size_t draw = 0; draw < plan.n_active; ++draw) {
+                const SusceptibleParameters person = stepper.take_susceptible();
+                consistent = consistent && person.bank_index == draw &&
+                             person.pbr_m3h == banks.bank(BankId::susceptible_pbr).values[draw] &&
+                             person.gamma_per_h == banks.bank(BankId::gamma).values[draw] &&
+                             person.lambda_per_h == banks.bank(BankId::lambda).values[draw] &&
+                             person.ids[0] == banks.bank(BankId::susceptible_pbr).value_id(draw) &&
+                             person.ids[1] == banks.bank(BankId::gamma).value_id(draw) &&
+                             person.ids[2] == banks.bank(BankId::lambda).value_id(draw);
+                for (BankId id : kAllBankIds) {
+                    const std::size_t expected = is_infector_bank(id) ? 0 : draw + 1;
+                    consistent = consistent && stepper.cursor(id) == expected;
+                }
+            }
+            for (std::size_t draw = 0; draw < plan.k_total; ++draw) {
+                const InfectorParameters person = stepper.take_infector();
+                consistent = consistent && person.bank_index == draw &&
+                             person.pbr_m3h == banks.bank(BankId::infector_pbr).values[draw] &&
+                             person.c_drop == banks.bank(BankId::c_drop).values[draw] &&
+                             person.d_bar == banks.bank(BankId::d_bar).values[draw] &&
+                             person.evaporation_factor == banks.bank(BankId::E).values[draw] &&
+                             person.gvl_copies_per_ml == banks.bank(BankId::GVL).values[draw] &&
+                             person.viable_fraction == banks.bank(BankId::VF).values[draw] &&
+                             person.rtd == banks.bank(BankId::RTD).values[draw] &&
+                             person.dose_constant == banks.bank(BankId::DK).values[draw];
+                const std::array<BankId, 8> infector_order = {
+                    BankId::infector_pbr, BankId::c_drop, BankId::d_bar, BankId::E,
+                    BankId::GVL,          BankId::VF,     BankId::RTD,   BankId::DK};
+                for (std::size_t i = 0; i < infector_order.size(); ++i) {
+                    consistent = consistent &&
+                                 person.ids[i] == banks.bank(infector_order[i]).value_id(draw);
+                }
+                for (BankId id : kAllBankIds) {
+                    const std::size_t expected = is_infector_bank(id) ? draw + 1 : plan.n_active;
+                    consistent = consistent && stepper.cursor(id) == expected;
+                }
+            }
+            check(consistent && stepper.exhausted(),
+                  "cursor: every take_* returns the value and id at its reported bank position "
+                  "and advances only its own sizing class by exactly one");
+
+            threw = false;
+            try {
+                stepper.take_susceptible();
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            check(threw, "cursor: take_susceptible on an exhausted cursor still overruns");
+            threw = false;
+            try {
+                stepper.take_infector();
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            check(threw, "cursor: take_infector on an exhausted cursor still overruns");
+        }
     }
 
     if (g_failures > 0) {

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -102,15 +103,24 @@ double acklam_normal_ppf(double u) {
     return x;
 }
 
+// The "<name>: <detail>" message is assembled only on the failure path so
+// the per-draw validators below never allocate when the input is valid.
+[[noreturn]] void throw_named_invalid_argument(const char* name, const char* detail) {
+    throw std::invalid_argument(std::string(name) + detail);
+}
+
 void require_open_unit_u(double u, const char* name) {
-    require(std::isfinite(u), (std::string(name) + ": u must be finite").c_str());
-    require(u > 0.0 && u < 1.0, (std::string(name) + ": u must be strictly inside (0, 1)").c_str());
+    if (!std::isfinite(u)) throw_named_invalid_argument(name, ": u must be finite");
+    if (!(u > 0.0 && u < 1.0)) {
+        throw_named_invalid_argument(name, ": u must be strictly inside (0, 1)");
+    }
 }
 
 void require_closed_unit_u(double u, const char* name) {
-    require(std::isfinite(u), (std::string(name) + ": u must be finite").c_str());
-    require(u >= 0.0 && u <= 1.0, (std::string(name) + ": u must be in the closed interval [0, 1]")
-                                       .c_str());
+    if (!std::isfinite(u)) throw_named_invalid_argument(name, ": u must be finite");
+    if (!(u >= 0.0 && u <= 1.0)) {
+        throw_named_invalid_argument(name, ": u must be in the closed interval [0, 1]");
+    }
 }
 
 // ------------------------------------------------------------------
@@ -272,41 +282,46 @@ class CompensatedSum {
     double compensation_ = 0.0;
 };
 
-}  // namespace
+// Shared (n, p) parameter contract of binomial_ppf and BinomialPpfTable.
+// `name` prefixes every diagnostic so each entry point keeps its own
+// message text.
+void require_binomial_parameters(long long n, double p, const char* name) {
+    if (n < 0) throw_named_invalid_argument(name, ": n must be non-negative");
+    if (!(std::isfinite(p) && p >= 0.0 && p <= 1.0)) {
+        throw_named_invalid_argument(name, ": p must be finite and in [0, 1]");
+    }
+}
 
-long long binomial_ppf(double u, long long n, double p) {
-    require(std::isfinite(u), "binomial_ppf: u must be finite");
-    require(u > 0.0 && u <= 1.0, "binomial_ppf: u must be in the half-open interval (0, 1]");
-    require(n >= 0, "binomial_ppf: n must be non-negative");
-    require(std::isfinite(p) && p >= 0.0 && p <= 1.0, "binomial_ppf: p must be finite and in [0, 1]");
-
-    if (n == 0) return 0;
-    // Endpoint convention is intentionally aligned with scipy.stats.binom.ppf:
-    // q == 1 returns the upper support endpoint n, including degenerate p=0.
-    if (u >= 1.0) return n;
-    if (p <= 0.0) return 0;
-    if (p >= 1.0) return n;
-
-    // Guard the n -> size_t widening and the (n+1)-length allocation below
-    // against overflow *before* touching the vector, per a fixed platform
-    // limit (vector<double>::max_size()) rather than discovering the
-    // overflow via UB in the cast or an allocation-time exception.
+// Guard the n -> size_t widening and the (n+1)-length allocation against
+// overflow *before* touching any vector, per a fixed platform limit
+// (vector<double>::max_size()) rather than discovering the overflow via UB
+// in the cast or an allocation-time exception. Returns the buffer length
+// n+1. `n` must already be validated as non-negative.
+std::size_t checked_binomial_buffer_count(long long n, const char* name) {
     const unsigned long long un = static_cast<unsigned long long>(n);
     const unsigned long long max_supported =
         static_cast<unsigned long long>(std::vector<double>().max_size()) - 1ULL;
     if (un > max_supported) {
-        throw std::runtime_error("binomial_ppf: n=" + std::to_string(n) +
-                                  " exceeds the maximum size supported for the PMF buffer");
+        throw std::runtime_error(std::string(name) + ": n=" + std::to_string(n) +
+                                 " exceeds the maximum size supported for the PMF buffer");
     }
-    const std::size_t count = static_cast<std::size_t>(n) + 1;
+    return static_cast<std::size_t>(n) + 1;
+}
 
-    // Mode-centered PMF recurrence: computing pmf(0) = (1-p)^n and scanning
-    // forward underflows to exactly 0.0 whenever (1-p)^n is smaller than the
-    // smallest representable double (e.g. n=400, p=0.9: 0.1^400), after
-    // which multiplying the zero PMF by finite ratios stays zero forever.
-    // Starting from the mode (where the PMF is largest, so it is the term
-    // least likely to underflow) and filling outward in both directions
-    // avoids that failure mode entirely.
+// The mode-centered PMF recurrence shared, term for term and in the same
+// evaluation order, by binomial_ppf and BinomialPpfTable. `pmf` must be
+// n+1 zero-initialized doubles; on return it holds the unnormalized PMF and
+// the compensated normalizer (the sum of every term) is returned. Requires
+// n >= 1 and p strictly inside (0, 1): the callers short-circuit every
+// degenerate case before reaching the recurrence.
+//
+// Computing pmf(0) = (1-p)^n and scanning forward underflows to exactly 0.0
+// whenever (1-p)^n is smaller than the smallest representable double (e.g.
+// n=400, p=0.9: 0.1^400), after which multiplying the zero PMF by finite
+// ratios stays zero forever. Starting from the mode (where the PMF is
+// largest, so it is the term least likely to underflow) and filling outward
+// in both directions avoids that failure mode entirely.
+double fill_binomial_pmf(long long n, double p, std::vector<double>& pmf) {
     long long mode =
         static_cast<long long>(std::floor((static_cast<double>(n) + 1.0) * p));
     mode = std::max<long long>(0, std::min<long long>(mode, n));
@@ -319,7 +334,6 @@ long long binomial_ppf(double u, long long n, double p) {
                                  static_cast<double>(mode) * log_p +
                                  static_cast<double>(n - mode) * log_1mp;
 
-    std::vector<double> pmf(count, 0.0);
     pmf[static_cast<std::size_t>(mode)] = std::exp(log_pmf_mode);
 
     // Fill upward from the mode: pmf(k+1) = pmf(k) * (n-k)*p / ((k+1)*(1-p)).
@@ -341,7 +355,26 @@ long long binomial_ppf(double u, long long n, double p) {
 
     CompensatedSum normalizer_sum;
     for (double v : pmf) normalizer_sum.add(v);
-    const double normalizer = normalizer_sum.total();
+    return normalizer_sum.total();
+}
+
+}  // namespace
+
+long long binomial_ppf(double u, long long n, double p) {
+    require(std::isfinite(u), "binomial_ppf: u must be finite");
+    require(u > 0.0 && u <= 1.0, "binomial_ppf: u must be in the half-open interval (0, 1]");
+    require_binomial_parameters(n, p, "binomial_ppf");
+
+    if (n == 0) return 0;
+    // Endpoint convention is intentionally aligned with scipy.stats.binom.ppf:
+    // q == 1 returns the upper support endpoint n, including degenerate p=0.
+    if (u >= 1.0) return n;
+    if (p <= 0.0) return 0;
+    if (p >= 1.0) return n;
+
+    const std::size_t count = checked_binomial_buffer_count(n, "binomial_ppf");
+    std::vector<double> pmf(count, 0.0);
+    const double normalizer = fill_binomial_pmf(n, p, pmf);
 
     CompensatedSum cumulative;
     for (long long k = 0; k <= n; ++k) {
@@ -353,6 +386,47 @@ long long binomial_ppf(double u, long long n, double p) {
     // CDF is exactly 1). Bounded by the n+1 terms evaluated above; never
     // loops indefinitely.
     return n;
+}
+
+BinomialPpfTable::BinomialPpfTable(long long n, double p) : n_(n), p_(p) {
+    require_binomial_parameters(n, p, "BinomialPpfTable");
+    // The same degenerate cases binomial_ppf short-circuits before its
+    // recurrence need no table at all; ppf() answers them directly.
+    if (n == 0 || p <= 0.0 || p >= 1.0) return;
+
+    const std::size_t count = checked_binomial_buffer_count(n, "BinomialPpfTable");
+    std::vector<double> pmf(count, 0.0);
+    const double normalizer = fill_binomial_pmf(n, p, pmf);
+
+    // Store exactly the value binomial_ppf compares against u at each k --
+    // the same compensated cumulative sum, divided by the same normalizer,
+    // in the same order -- so ppf() reproduces its decision bit for bit.
+    cdf_.assign(count, 0.0);
+    CompensatedSum cumulative;
+    for (std::size_t k = 0; k < count; ++k) {
+        cumulative.add(pmf[k]);
+        cdf_[k] = cumulative.total() / normalizer;
+    }
+}
+
+long long BinomialPpfTable::ppf(double u) const {
+    require(std::isfinite(u), "BinomialPpfTable::ppf: u must be finite");
+    require(u > 0.0 && u <= 1.0,
+            "BinomialPpfTable::ppf: u must be in the half-open interval (0, 1]");
+
+    if (n_ == 0) return 0;
+    if (u >= 1.0) return n_;
+    if (p_ <= 0.0) return 0;
+    if (p_ >= 1.0) return n_;
+
+    // Exact linear scan over the stored comparison values: the first k whose
+    // stored value is >= u is precisely the k at which binomial_ppf's
+    // cumulative scan returns.
+    for (std::size_t k = 0; k < cdf_.size(); ++k) {
+        if (cdf_[k] >= u) return static_cast<long long>(k);
+    }
+    // Same documented fallback as binomial_ppf.
+    return n_;
 }
 
 }  // namespace distributions

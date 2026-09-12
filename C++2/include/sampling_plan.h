@@ -39,8 +39,9 @@ struct ResourcePolicy {
     // Ceiling on K_total (the sum of every simulation's infector count) and
     // on its checked upper bound N * I0.
     std::size_t max_total_infectors = 536870912ULL;  // 2^29
-    // Ceiling on peak bytes: N uniforms + N counts + one simultaneously-live
-    // (I0+1)-double binomial PMF buffer.
+    // Ceiling on peak bytes: N uniforms + N counts + the two simultaneously-
+    // live (I0+1)-double binomial buffers (PMF and CDF) of the per-replicate
+    // distributions::BinomialPpfTable.
     std::size_t max_bytes = 4ULL * 1024 * 1024 * 1024;  // 4 GiB
 };
 
@@ -78,8 +79,10 @@ struct SamplingPlan {
 
 // Generates exactly `n` open-unit 1D LHS values (seeded from
 // seeds.derive_seed(config, replicate_index, StreamId::infector_count, n)),
-// transforms each through distributions::binomial_ppf(u, i0, p) to obtain
-// one infector count per simulation, and returns the resulting plan.
+// transforms each through one per-call distributions::BinomialPpfTable(i0,
+// p) -- whose ppf(u) equals distributions::binomial_ppf(u, i0, p) exactly,
+// with the constant (i0, p) PMF/CDF built once rather than once per u -- to
+// obtain one infector count per simulation, and returns the resulting plan.
 //
 // Every check below runs, in order, before any allocation:
 //   - n == 0: std::invalid_argument.
@@ -90,11 +93,11 @@ struct SamplingPlan {
 //     value) overflowing std::size_t, or exceeding
 //     policy.max_total_infectors: std::runtime_error.
 //   - checked peak byte cost of the n-length uniform/count vectors plus the
-//     `(i0+1)`-double binomial PMF, overflowing std::size_t or exceeding
-//     policy.max_bytes, or n exceeding
+//     two `(i0+1)`-double binomial buffers (PMF and CDF), overflowing
+//     std::size_t or exceeding policy.max_bytes, or n exceeding
 //     std::vector<double>::max_size() / std::vector<long long>::max_size():
 //     std::runtime_error.
-//   - checked i0 + 1 (distributions::binomial_ppf's internal PMF buffer
+//   - checked i0 + 1 (distributions::BinomialPpfTable's PMF/CDF buffer
 //     size) overflowing std::size_t or exceeding
 //     std::vector<double>::max_size(): std::runtime_error.
 //

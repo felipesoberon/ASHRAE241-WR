@@ -5,8 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Default to an optimized build with debug info when the caller does not
+# choose one. The reproducible floating-point flags below apply to every
+# configuration; no -Ofast / -ffast-math / -march=native is ever added.
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
 # Warnings and reproducible floating-point flags, per docs/MODEL_SPECIFICATION.md

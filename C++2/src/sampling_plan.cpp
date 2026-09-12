@@ -103,9 +103,12 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
             std::to_string(policy.max_total_infectors));
     }
 
-    // Peak Stage-6 working set: the n-length uniform and count vectors remain
-    // live while binomial_ppf temporarily owns one (i0+1)-double PMF buffer.
+    // Peak Stage-6 working set: the n-length uniform and count vectors are
+    // conservatively counted as live alongside the BinomialPpfTable's peak of
+    // two (i0+1)-double buffers (the transient PMF buffer plus the retained
+    // CDF buffer, see distributions.h).
     constexpr std::size_t kBytesPerSimulation = sizeof(double) + sizeof(long long);
+    constexpr std::size_t kBinomialTableBuffers = 2;
     std::size_t vectors_bytes = 0;
     if (!checked_mul(n, kBytesPerSimulation, vectors_bytes)) {
         throw std::runtime_error("build_sampling_plan: vector byte-count computation overflows size_t");
@@ -117,18 +120,18 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
             "uniform/count vectors");
     }
 
-    // Mirrors distributions::binomial_ppf's internal (n+1)-length PMF buffer.
+    // Mirrors distributions::BinomialPpfTable's (n+1)-length PMF/CDF buffers.
     std::size_t i0_plus_one = 0;
     if (!checked_add(i0_unsigned, static_cast<std::size_t>(1), i0_plus_one) ||
         i0_plus_one > std::vector<double>().max_size()) {
         throw std::runtime_error(
             "build_sampling_plan: i0=" + std::to_string(i0) +
-            " exceeds the maximum size supported for the binomial_ppf PMF buffer");
+            " exceeds the maximum size supported for the binomial PMF/CDF buffers");
     }
-    std::size_t pmf_bytes = 0;
+    std::size_t table_bytes = 0;
     std::size_t peak_bytes = 0;
-    if (!checked_mul(i0_plus_one, sizeof(double), pmf_bytes) ||
-        !checked_add(vectors_bytes, pmf_bytes, peak_bytes)) {
+    if (!checked_mul(i0_plus_one, kBinomialTableBuffers * sizeof(double), table_bytes) ||
+        !checked_add(vectors_bytes, table_bytes, peak_bytes)) {
         throw std::runtime_error("build_sampling_plan: peak byte-count computation overflows size_t");
     }
     if (peak_bytes > policy.max_bytes) {
@@ -145,12 +148,17 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
                                                   static_cast<std::uint64_t>(n));
     const std::vector<double> uniforms = lhs::generate_lhs_1d(n, seed);
 
+    // One table per replicate: the constant-(i0, p) PMF/CDF is built once
+    // here, and each u is then resolved against it with exactly
+    // distributions::binomial_ppf(u, i0, p)'s result.
+    const distributions::BinomialPpfTable table(i0, p);
+
     std::vector<long long> counts;
     counts.reserve(n);
     for (double u : uniforms) {
-        const long long count = distributions::binomial_ppf(u, i0, p);
+        const long long count = table.ppf(u);
         if (count < 0 || count > i0) {
-            throw std::runtime_error("build_sampling_plan: binomial_ppf returned " +
+            throw std::runtime_error("build_sampling_plan: binomial ppf returned " +
                                       std::to_string(count) + ", outside [0, " +
                                       std::to_string(i0) + "]");
         }
@@ -209,12 +217,32 @@ constexpr std::size_t kInfectorBankCount = 8;
 static_assert(kSusceptibleBankCount + kInfectorBankCount == kBankTraits.size(),
               "bank-count constants must stay consistent with kBankTraits");
 
-const BankTraits& traits_for(BankId bank) {
-    for (const BankTraits& t : kBankTraits) {
-        if (t.bank == bank) return t;
+// kBankTraits is indexed directly by BankId ordinal below, so row i must
+// describe BankId(i). Proven here at compile time rather than searched for
+// at run time.
+constexpr bool bank_traits_are_ordinal_indexed() {
+    for (std::size_t i = 0; i < kBankTraits.size(); ++i) {
+        if (static_cast<std::size_t>(kBankTraits[i].bank) != i) return false;
     }
-    throw std::invalid_argument("sampling_plan: unknown BankId value " +
-                                 std::to_string(static_cast<std::uint64_t>(bank)));
+    return true;
+}
+static_assert(bank_traits_are_ordinal_indexed(),
+              "kBankTraits row i must describe BankId ordinal i");
+static_assert(kBankTraits.size() == kAllBankIds.size(),
+              "kBankTraits must cover exactly the banks in kAllBankIds");
+
+// The ordinal of a BankId already known to be valid (a member of kAllBankIds
+// or kBankTraits): no range check, so only for compile-time-fixed ids.
+constexpr std::size_t ordinal_of(BankId bank) { return static_cast<std::size_t>(bank); }
+
+// Range-checked, O(1) lookup: a BankId outside kAllBankIds is rejected with
+// std::invalid_argument exactly as before.
+const BankTraits& traits_for(BankId bank) {
+    if (static_cast<std::uint64_t>(bank) >= kBankTraits.size()) {
+        throw std::invalid_argument("sampling_plan: unknown BankId value " +
+                                     std::to_string(static_cast<std::uint64_t>(bank)));
+    }
+    return kBankTraits[static_cast<std::size_t>(bank)];
 }
 
 }  // namespace
@@ -383,8 +411,7 @@ std::uint64_t ParameterBank::value_id(std::size_t index) const {
 }
 
 const ParameterBank& ParameterBanks::bank(BankId id) const {
-    const BankTraits& traits = traits_for(id);
-    return banks[static_cast<std::size_t>(traits.bank)];
+    return banks[ordinal_of(traits_for(id).bank)];
 }
 
 ParameterBanks build_parameter_banks(const seed_manager::SeedManager& seeds,
@@ -442,72 +469,102 @@ constexpr std::array<BankId, 8> kInfectorBanks = {
     BankId::infector_pbr, BankId::c_drop, BankId::d_bar, BankId::E,
     BankId::GVL,          BankId::VF,     BankId::RTD,   BankId::DK};
 
+// Every id the cursor indexes banks/cursors_ with directly is a member of
+// kBankTraits with the sizing class its list name claims.
+template <std::size_t N>
+constexpr bool bank_list_is_valid(const std::array<BankId, N>& ids, bool infector_sized) {
+    for (BankId id : ids) {
+        const std::size_t ordinal = static_cast<std::size_t>(id);
+        if (ordinal >= kBankTraits.size()) return false;
+        if (kBankTraits[ordinal].infector_sized != infector_sized) return false;
+    }
+    return true;
+}
+static_assert(bank_list_is_valid(kSusceptibleBanks, false),
+              "kSusceptibleBanks must list exactly susceptible-sized kBankTraits rows");
+static_assert(bank_list_is_valid(kInfectorBanks, true),
+              "kInfectorBanks must list exactly infector-sized kBankTraits rows");
+static_assert(kSusceptibleBanks.size() == kSusceptibleBankCount &&
+                  kInfectorBanks.size() == kInfectorBankCount,
+              "cursor bank lists must match the section 11.1 bank counts");
+
 }  // namespace
 
 std::size_t ReplicateAssignments::final_cursor(BankId id) const {
-    return final_cursors[static_cast<std::size_t>(traits_for(id).bank)];
+    return final_cursors[ordinal_of(traits_for(id).bank)];
 }
 
 std::size_t ParameterCursor::cursor(BankId id) const {
-    return cursors_[static_cast<std::size_t>(traits_for(id).bank)];
+    return cursors_[ordinal_of(traits_for(id).bank)];
 }
 
+// The cursor paths below index banks_->banks and cursors_ directly by the
+// ordinals of the compile-time-verified kSusceptibleBanks / kInfectorBanks
+// lists instead of re-validating each id through bank()/cursor() on every
+// draw. The per-bank exhaustion check, the per-value bounds-checked
+// value_id, the bank ids and the forward-only cursor behavior are unchanged.
 SusceptibleParameters ParameterCursor::take_susceptible() {
+    const std::array<ParameterBank, 11>& banks = banks_->banks;
     for (BankId id : kSusceptibleBanks) {
-        const std::size_t ordinal = static_cast<std::size_t>(id);
-        if (cursors_[ordinal] >= banks_->bank(id).values.size()) {
+        const std::size_t ordinal = ordinal_of(id);
+        if (cursors_[ordinal] >= banks[ordinal].values.size()) {
             throw std::runtime_error("ParameterCursor::take_susceptible: bank " +
                                       bank_id_name(id) + " is exhausted at index " +
                                       std::to_string(cursors_[ordinal]) +
                                       "; there is no refill path");
         }
     }
-    const std::size_t index = cursors_[static_cast<std::size_t>(BankId::susceptible_pbr)];
+    const auto value_at = [&](BankId id) {
+        return banks[ordinal_of(id)].values[cursors_[ordinal_of(id)]];
+    };
     SusceptibleParameters person;
-    person.bank_index = index;
-    person.pbr_m3h = banks_->bank(BankId::susceptible_pbr).values[index];
-    person.gamma_per_h = banks_->bank(BankId::gamma).values[cursor(BankId::gamma)];
-    person.lambda_per_h = banks_->bank(BankId::lambda).values[cursor(BankId::lambda)];
+    person.bank_index = cursors_[ordinal_of(BankId::susceptible_pbr)];
+    person.pbr_m3h = value_at(BankId::susceptible_pbr);
+    person.gamma_per_h = value_at(BankId::gamma);
+    person.lambda_per_h = value_at(BankId::lambda);
     for (std::size_t i = 0; i < kSusceptibleBanks.size(); ++i) {
-        const BankId id = kSusceptibleBanks[i];
-        person.ids[i] = banks_->bank(id).value_id(cursor(id));
-        ++cursors_[static_cast<std::size_t>(id)];
+        const std::size_t ordinal = ordinal_of(kSusceptibleBanks[i]);
+        person.ids[i] = banks[ordinal].value_id(cursors_[ordinal]);
+        ++cursors_[ordinal];
     }
     return person;
 }
 
 InfectorParameters ParameterCursor::take_infector() {
+    const std::array<ParameterBank, 11>& banks = banks_->banks;
     for (BankId id : kInfectorBanks) {
-        const std::size_t ordinal = static_cast<std::size_t>(id);
-        if (cursors_[ordinal] >= banks_->bank(id).values.size()) {
+        const std::size_t ordinal = ordinal_of(id);
+        if (cursors_[ordinal] >= banks[ordinal].values.size()) {
             throw std::runtime_error("ParameterCursor::take_infector: bank " + bank_id_name(id) +
                                       " is exhausted at index " +
                                       std::to_string(cursors_[ordinal]) +
                                       "; there is no refill path");
         }
     }
+    const auto value_at = [&](BankId id) {
+        return banks[ordinal_of(id)].values[cursors_[ordinal_of(id)]];
+    };
     InfectorParameters person;
-    person.bank_index = cursor(BankId::infector_pbr);
-    person.pbr_m3h = banks_->bank(BankId::infector_pbr).values[cursor(BankId::infector_pbr)];
-    person.c_drop = banks_->bank(BankId::c_drop).values[cursor(BankId::c_drop)];
-    person.d_bar = banks_->bank(BankId::d_bar).values[cursor(BankId::d_bar)];
-    person.evaporation_factor = banks_->bank(BankId::E).values[cursor(BankId::E)];
-    person.gvl_copies_per_ml = banks_->bank(BankId::GVL).values[cursor(BankId::GVL)];
-    person.viable_fraction = banks_->bank(BankId::VF).values[cursor(BankId::VF)];
-    person.rtd = banks_->bank(BankId::RTD).values[cursor(BankId::RTD)];
-    person.dose_constant = banks_->bank(BankId::DK).values[cursor(BankId::DK)];
+    person.bank_index = cursors_[ordinal_of(BankId::infector_pbr)];
+    person.pbr_m3h = value_at(BankId::infector_pbr);
+    person.c_drop = value_at(BankId::c_drop);
+    person.d_bar = value_at(BankId::d_bar);
+    person.evaporation_factor = value_at(BankId::E);
+    person.gvl_copies_per_ml = value_at(BankId::GVL);
+    person.viable_fraction = value_at(BankId::VF);
+    person.rtd = value_at(BankId::RTD);
+    person.dose_constant = value_at(BankId::DK);
     for (std::size_t i = 0; i < kInfectorBanks.size(); ++i) {
-        const BankId id = kInfectorBanks[i];
-        person.ids[i] = banks_->bank(id).value_id(cursor(id));
-        ++cursors_[static_cast<std::size_t>(id)];
+        const std::size_t ordinal = ordinal_of(kInfectorBanks[i]);
+        person.ids[i] = banks[ordinal].value_id(cursors_[ordinal]);
+        ++cursors_[ordinal];
     }
     return person;
 }
 
 bool ParameterCursor::exhausted() const {
-    for (const BankTraits& traits : kBankTraits) {
-        if (cursors_[static_cast<std::size_t>(traits.bank)] !=
-            banks_->bank(traits.bank).values.size()) {
+    for (std::size_t ordinal = 0; ordinal < kBankTraits.size(); ++ordinal) {
+        if (cursors_[ordinal] != banks_->banks[ordinal].values.size()) {
             return false;
         }
     }
@@ -515,9 +572,10 @@ bool ParameterCursor::exhausted() const {
 }
 
 void ParameterCursor::finalize() const {
-    for (const BankTraits& traits : kBankTraits) {
-        const std::size_t position = cursors_[static_cast<std::size_t>(traits.bank)];
-        const std::size_t length = banks_->bank(traits.bank).values.size();
+    for (std::size_t ordinal = 0; ordinal < kBankTraits.size(); ++ordinal) {
+        const BankTraits& traits = kBankTraits[ordinal];
+        const std::size_t position = cursors_[ordinal];
+        const std::size_t length = banks_->banks[ordinal].values.size();
         if (position != length) {
             throw std::runtime_error("ParameterCursor::finalize: bank " +
                                       std::string(traits.name) + " consumed " +
@@ -562,9 +620,9 @@ ReplicateAssignments assign_replicate(ParameterCursor& cursor, const SamplingPla
     }
 
     cursor.finalize();
-    for (const BankTraits& traits : kBankTraits) {
-        assignments.final_cursors[static_cast<std::size_t>(traits.bank)] = cursor.cursor(traits.bank);
-    }
+    // cursors_ and final_cursors share the BankId-ordinal layout, so the
+    // finalized positions are copied across in one step.
+    assignments.final_cursors = cursor.cursors_;
     return assignments;
 }
 

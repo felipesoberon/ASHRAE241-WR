@@ -355,24 +355,30 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     if (options.collect_audit) {
         result.audit.evaluation_order = schedule;
     }
+    // One scratch QER list for the whole schedule: it is emptied and then
+    // filled in list order for each row, so its contents when compute_ecai
+    // runs are exactly that row's per-infector QERs in the same order as
+    // before. The room-level inputs are the same for every row and are set
+    // once; only the susceptible's three values change per row.
+    std::vector<double> qer_per_h;
+    model::ECAiInputs inputs;
+    inputs.volume_m3 = scenario.volume_m3;
+    inputs.occupants = scenario.occupants;
+    inputs.mask_efficiency = scenario.mask_efficiency;
+    inputs.duration_h = scenario.duration_hours;
+    inputs.target_probability = scenario.target_probability;
     for (const std::size_t row : schedule) {
         const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
-        std::vector<double> qer_per_h;
+        qer_per_h.clear();
         qer_per_h.reserve(simulation.infectors.size());
         for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
             qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
             ++result.counters.qer_evaluations;
         }
 
-        model::ECAiInputs inputs;
         inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
         inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
         inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
-        inputs.volume_m3 = scenario.volume_m3;
-        inputs.occupants = scenario.occupants;
-        inputs.mask_efficiency = scenario.mask_efficiency;
-        inputs.duration_h = scenario.duration_hours;
-        inputs.target_probability = scenario.target_probability;
 
         const model::ECAiResult ecai = model::compute_ecai(inputs, qer_per_h);
         ++result.counters.ecai_evaluations;

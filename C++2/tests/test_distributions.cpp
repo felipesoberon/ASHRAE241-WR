@@ -712,6 +712,152 @@ int main() {
     }
 
     // ================================================================
+    // BinomialPpfTable: for a fixed (n, p), ppf(u) must equal the
+    // single-shot binomial_ppf(u, n, p) exactly for every valid u --
+    // dense grid, extreme tails, the pinned CDF-step / tie literals, and
+    // the degenerate n=0 / p=0 / p=1 / u=1 conventions -- and its
+    // validation and max-size guards must mirror binomial_ppf's.
+    // ================================================================
+    {
+        struct NP { long long n; double p; };
+        const NP params[] = {
+            {400, 0.01}, {400, 0.03}, {400, 0.9},  {400, 0.99}, {10, 0.3},
+            {1, 0.5},    {1, 0.9},    {3, 0.9},    {161, 0.5},  {325, 0.5},
+            {2000, 0.5}, {50, 1e-6},  {50, 1.0 - 1e-6},
+        };
+        const double tails[] = {
+            std::numeric_limits<double>::denorm_min(), 1e-300, 1e-15, 1e-12, 1e-9,
+            std::ldexp(1.0, -54), 1.0 - 1e-9, 1.0 - 1e-12, 1.0 - std::ldexp(1.0, -53), 1.0,
+        };
+        const int grid = 20000;
+        for (const NP& np : params) {
+            const BinomialPpfTable table(np.n, np.p);
+            bool all_equal = table.n() == np.n && table.p() == np.p;
+            bool monotone = true;
+            long long previous = -1;
+            for (int i = 1; i <= grid && all_equal; ++i) {
+                const double u = static_cast<double>(i) / static_cast<double>(grid);
+                const long long actual = table.ppf(u);
+                all_equal = actual == binomial_ppf(u, np.n, np.p);
+                monotone = monotone && actual >= previous;
+                previous = actual;
+            }
+            for (double u : tails) {
+                all_equal = all_equal && table.ppf(u) == binomial_ppf(u, np.n, np.p);
+            }
+            check(all_equal, "BinomialPpfTable(n=" + std::to_string(np.n) + ", p=" +
+                                 std::to_string(np.p) + ").ppf equals binomial_ppf over " +
+                                 std::to_string(grid) + " dense u values and the tails");
+            check(monotone, "BinomialPpfTable(n=" + std::to_string(np.n) + ", p=" +
+                                std::to_string(np.p) + ").ppf is non-decreasing in u");
+        }
+
+        // Pinned boundary literals (exact CDF steps, tolerated ties, dense
+        // n=10 p=0.3 steps): the table must resolve each one identically.
+        {
+            const BinomialPpfTable t400(400, 0.01);
+            const double steps[] = {0.017950553275045196, 0.09047804125502519,
+                                    0.2366319185480154,   0.43248795613256125,
+                                    0.6288385796706073,   0.7859190785010428,
+                                    0.9973169239092451,   0.9999999986484686};
+            bool boundary_equal = true;
+            for (double cdf : steps) {
+                for (double u : {cdf - 1e-12, cdf, cdf + 1e-12}) {
+                    boundary_equal = boundary_equal && t400.ppf(u) == binomial_ppf(u, 400, 0.01);
+                }
+            }
+            check(boundary_equal,
+                  "BinomialPpfTable(400, 0.01) matches binomial_ppf just below / exactly at / "
+                  "just above every pinned CDF step");
+
+            struct Tie { long long n; double p; double u; long long expected; };
+            const Tie ties[] = {{1, 0.9, 0.10000000000000001, 1},
+                                {3, 0.9, 0.001, 1},
+                                {161, 0.5, 0.5, 80},
+                                {325, 0.5, 0.5, 162}};
+            for (const Tie& tie : ties) {
+                check(BinomialPpfTable(tie.n, tie.p).ppf(tie.u) == tie.expected,
+                      "BinomialPpfTable reproduces the pinned tolerated CDF-boundary tie");
+            }
+
+            const BinomialPpfTable t10(10, 0.3);
+            const double dense[] = {0.02824752489999999, 0.1493083458999999, 0.38278278639999974,
+                                    0.6496107184000001,  0.8497316674000001, 0.9526510126,
+                                    0.9894079216,        0.9984096136,       0.9998563141,
+                                    0.9999940951,        1.0};
+            bool dense_equal = true;
+            for (double cdf : dense) {
+                const double u = cdf - 1e-13;
+                dense_equal = dense_equal && t10.ppf(u) == binomial_ppf(u, 10, 0.3);
+            }
+            check(dense_equal,
+                  "BinomialPpfTable(10, 0.3) matches binomial_ppf just below every dense CDF step");
+        }
+
+        // Degenerate conventions, answered without a table buffer.
+        {
+            const BinomialPpfTable n0(0, 0.3);
+            check(n0.ppf(0.5) == 0 && n0.ppf(1e-9) == 0 && n0.ppf(1.0) == 0,
+                  "BinomialPpfTable(n=0).ppf == 0 for every valid u");
+            const BinomialPpfTable p0(10, 0.0);
+            check(p0.ppf(0.999) == 0 && p0.ppf(1.0) == 10,
+                  "BinomialPpfTable(p=0).ppf == 0 below u=1 and n at u=1 (SciPy endpoint "
+                  "convention)");
+            const BinomialPpfTable p1(10, 1.0);
+            check(p1.ppf(0.001) == 10 && p1.ppf(1.0) == 10,
+                  "BinomialPpfTable(p=1).ppf == n for every valid u");
+            check(BinomialPpfTable(10, 0.01).ppf(1.0) == 10 &&
+                      BinomialPpfTable(100, 0.5).ppf(1.0) == 100 &&
+                      BinomialPpfTable(400, 0.9).ppf(1.0) == 400,
+                  "BinomialPpfTable.ppf(1.0) == n through the general path");
+        }
+
+        // Validation mirrors binomial_ppf's contract.
+        {
+            check(throws_invalid_argument([] { BinomialPpfTable(-1, 0.01); }),
+                  "BinomialPpfTable(n=-1, p) throws std::invalid_argument");
+            check(throws_invalid_argument([] { BinomialPpfTable(400, -0.01); }),
+                  "BinomialPpfTable(n, p<0) throws std::invalid_argument");
+            check(throws_invalid_argument([] { BinomialPpfTable(400, 1.01); }),
+                  "BinomialPpfTable(n, p>1) throws std::invalid_argument");
+            check(throws_invalid_argument(
+                      [] { BinomialPpfTable(400, std::numeric_limits<double>::quiet_NaN()); }),
+                  "BinomialPpfTable(n, p=NaN) throws std::invalid_argument");
+            const BinomialPpfTable table(400, 0.01);
+            check(throws_invalid_argument([&] { table.ppf(0.0); }),
+                  "BinomialPpfTable::ppf(0.0) throws std::invalid_argument");
+            check(throws_invalid_argument([&] { table.ppf(-0.1); }),
+                  "BinomialPpfTable::ppf(u<0) throws std::invalid_argument");
+            check(throws_invalid_argument([&] { table.ppf(1.1); }),
+                  "BinomialPpfTable::ppf(u>1) throws std::invalid_argument");
+            check(throws_invalid_argument(
+                      [&] { table.ppf(std::numeric_limits<double>::quiet_NaN()); }),
+                  "BinomialPpfTable::ppf(NaN) throws std::invalid_argument");
+        }
+
+        // Max-size guard: an n whose (n+1)-double buffer cannot exist is
+        // rejected with std::runtime_error before any allocation, by both
+        // the single-shot function and the table constructor.
+        {
+            const long long huge_n = std::numeric_limits<long long>::max();
+            bool single_threw = false;
+            try {
+                binomial_ppf(0.5, huge_n, 0.5);
+            } catch (const std::runtime_error&) {
+                single_threw = true;
+            }
+            check(single_threw, "binomial_ppf(u, n=LLONG_MAX, p) throws std::runtime_error");
+            bool table_threw = false;
+            try {
+                BinomialPpfTable(huge_n, 0.5);
+            } catch (const std::runtime_error&) {
+                table_threw = true;
+            }
+            check(table_threw, "BinomialPpfTable(n=LLONG_MAX, p) throws std::runtime_error");
+        }
+    }
+
+    // ================================================================
     // Finite-output requirement across the Jones-relevant open-tail range,
     // for every transform, including very close to (0,1).
     // ================================================================

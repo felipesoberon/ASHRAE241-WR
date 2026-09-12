@@ -34,6 +34,8 @@
 #ifndef ECAI_CPP2_DISTRIBUTIONS_H
 #define ECAI_CPP2_DISTRIBUTIONS_H
 
+#include <vector>
+
 namespace ecai_cpp2 {
 namespace distributions {
 
@@ -129,6 +131,43 @@ double beta_ppf(double u, double a, double b, double min, double max);
 // 11.5 binomial tolerance row). p = 0 and p = 1 are short-circuited to
 // return 0 and n exactly, without consulting the recurrence.
 long long binomial_ppf(double u, long long n, double p);
+
+// Reusable binomial inverse CDF for one fixed (n, p): the mode-centered PMF
+// recurrence and the Neumaier-compensated normalizer and cumulative scan of
+// binomial_ppf are evaluated exactly once, in the constructor, and the
+// normalized cumulative value binomial_ppf compares against u at each k is
+// stored, so ppf(u) reduces to the same >= comparison over the stored
+// values. For every valid u, ppf(u) == binomial_ppf(u, n, p) exactly,
+// including the documented tolerated CDF-boundary ties and the k = n
+// fallback. Intended for callers that transform many u values through the
+// same (n, p) (Stage 6's per-replicate infector-count list), where
+// recomputing the (n+1)-term recurrence per u is pure repeated work.
+//
+// The constructor validates (n, p) with binomial_ppf's parameter contract
+// (std::invalid_argument for negative n or nonfinite/out-of-[0,1] p) and
+// applies the same vector<double>::max_size() guard (std::runtime_error)
+// before allocating. It transiently owns one (n+1)-double PMF buffer while
+// building the retained (n+1)-double CDF buffer, so its peak working set is
+// two (n+1)-double buffers; the PMF buffer is released when the constructor
+// returns. n = 0, p = 0 and p = 1 allocate nothing and are answered by
+// ppf() with binomial_ppf's short-circuit conventions.
+//
+// ppf(u) validates u exactly as binomial_ppf does (half-open (0, 1],
+// std::invalid_argument otherwise) and is const and reentrant.
+class BinomialPpfTable {
+  public:
+    BinomialPpfTable(long long n, double p);
+
+    long long ppf(double u) const;
+
+    long long n() const { return n_; }
+    double p() const { return p_; }
+
+  private:
+    long long n_;
+    double p_;
+    std::vector<double> cdf_;
+};
 
 }  // namespace distributions
 }  // namespace ecai_cpp2

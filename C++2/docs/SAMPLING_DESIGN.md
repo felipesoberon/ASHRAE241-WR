@@ -97,10 +97,10 @@ All relevant size and policy checks precede allocation.
 The infector-count planning peak is:
 
 ```text
-16N + 8(I0 + 1) bytes
+16N + 16(I0 + 1) bytes
 ```
 
-This is one `N`-double uniform vector, one `N`-element `long long` count vector, and one `(I0 + 1)`-double binomial PMF buffer.
+This is one `N`-double uniform vector, one `N`-element `long long` count vector, and the two `(I0 + 1)`-double binomial buffers (the transient PMF and the retained CDF) of the per-replicate `BinomialPpfTable`, which builds the constant `(I0, p)` inverse CDF once and resolves every `u` against it with exactly the single-shot `binomial_ppf` result.
 
 The combined accounting for the retained count vector and parameter banks is:
 
