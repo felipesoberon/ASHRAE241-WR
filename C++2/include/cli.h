@@ -47,6 +47,12 @@ inline constexpr double kDefaultTargetProbability = 0.001;
 inline constexpr double kDefaultDurationHours = 1.0;
 inline constexpr std::uint64_t kDefaultBaseSeed = 485;
 
+// The output-mode default (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 4.4). There is no default constant for --input-ecai: in
+// probability mode it resolves from the selected category's published Table
+// 4 ECAi (simulation::resolve_scenario), not from a frozen literal here.
+inline constexpr simulation::OutputMode kDefaultMode = simulation::OutputMode::ecai;
+
 // Every accepted long option, in the order of IMPLEMENTATION_PLAN.md section
 // 5.2. Exposed so the help text and the parser cannot drift apart.
 const std::vector<std::string>& accepted_flags();
@@ -88,6 +94,14 @@ struct CliOptions {
     std::optional<double> mask_efficiency;
     std::optional<double> community_infection_rate;
 
+    // Output mode (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.4).
+    // `mode` alone never marks a run custom scenario; an explicit
+    // --input-ecai does. An unset input_ecai_l_s_person in probability mode
+    // resolves to the selected category's published Table 4 ECAi.
+    simulation::OutputMode mode = kDefaultMode;
+    bool mode_explicit = false;
+    std::optional<double> input_ecai_l_s_person;
+
     // Output controls. Stage 12 parses and records these only: no directory
     // or file is created, opened, written or checked.
     std::optional<std::string> output_directory;
@@ -107,9 +121,10 @@ struct CliOptions {
 
     // True iff at least one explicit scientific override was supplied:
     // target probability, duration, percentile, community rate, occupants,
-    // volume or mask efficiency. Explicitly supplying a value equal to the
-    // default still counts. Simulation count, replicate count, base seed,
-    // confidence level and the output controls never set this on their own.
+    // volume, mask efficiency, or input ECAi. Explicitly supplying a value
+    // equal to the default still counts. Simulation count, replicate count,
+    // base seed, confidence level, output mode and the output controls never
+    // set this on their own.
     bool custom_scenario = false;
 
     // True iff the effective duration is exactly 1.0 h. The target

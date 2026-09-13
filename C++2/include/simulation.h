@@ -47,6 +47,15 @@ namespace simulation {
 // 11/12 own the ceiling-to-5 comparator.
 double percentile_linear(const std::vector<double>& values, double p);
 
+// The output mode a run resolves to: the frozen ECAi inversion (default), or
+// the forward infection-probability evaluation at a fixed input ECAi
+// (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.2). `ecai` is
+// enumerator 0, so a value-initialized EffectiveScenario/EffectiveOverrides
+// defaults to ECAi mode without any explicit initialization.
+enum class OutputMode { ecai = 0, probability = 1 };
+static_assert(static_cast<int>(OutputMode::ecai) == 0,
+              "OutputMode::ecai must be enumerator 0 so value-initialization defaults to it");
+
 // The fully resolved per-run scenario used by one replicate: category
 // defaults after any explicit override, plus the run-level scientific
 // inputs. Units follow model::ECAiInputs (volume m^3, duration h, everything
@@ -70,8 +79,20 @@ struct EffectiveScenario {
     bool community_infection_rate_overridden = false;
     // True iff at least one of the four flags above is set
     // (IMPLEMENTATION_PLAN.md section 5.2: any override of a category
-    // scientific input makes the run a custom scenario).
+    // scientific input makes the run a custom scenario). Deliberately not
+    // ORed with input_ecai_overridden below: this keeps its ECAi-mode
+    // meaning ("one of the four category scientific inputs was overridden")
+    // exactly as it was before probability mode existed.
     bool custom_scenario = false;
+
+    // Probability-mode resolution (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+    // section 4.2/7). In ECAi mode both stay at their defaults regardless of
+    // any --input-ecai value (the CLI rejects that combination before
+    // resolution). In probability mode input_ecai_l_s_person is either the
+    // explicit override or the selected category's published Table 4 ECAi.
+    OutputMode mode = OutputMode::ecai;
+    double input_ecai_l_s_person = 0.0;
+    bool input_ecai_overridden = false;
 };
 
 // The four category scientific inputs a run may override. An unset optional
@@ -83,6 +104,12 @@ struct EffectiveOverrides {
     std::optional<double> volume_m3;
     std::optional<double> mask_efficiency;
     std::optional<double> community_infection_rate;
+
+    // Probability-mode overrides. `mode` selects the output mode (default
+    // ECAi); `input_ecai_l_s_person` is only consulted in probability mode,
+    // where an unset optional resolves to the category's published ECAi.
+    OutputMode mode = OutputMode::ecai;
+    std::optional<double> input_ecai_l_s_person;
 };
 
 // Resolves the category record plus explicit overrides into one scenario,
@@ -97,7 +124,13 @@ struct EffectiveOverrides {
 //   - I0 < 1, VOL not finite and positive, mask efficiency outside [0, 1],
 //     community rate outside [0, 1], target probability outside the open
 //     interval (0, 1), duration not finite and positive, or percentile not
-//     finite and inside [0, 1].
+//     finite and inside [0, 1];
+//   - overrides.mode is probability and the resolved input ECAi (the
+//     override, or else category.published_ecai_Lsp) is not finite or is
+//     negative.
+// Mode and the resolved input ECAi are deliberately not part of `config`:
+// they are not fingerprint fields (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 6), so this function reads them only from `overrides`.
 EffectiveScenario resolve_scenario(const OccupancyCategory& category,
                                     const seed_manager::EffectiveConfig& config,
                                     const EffectiveOverrides& overrides = EffectiveOverrides{});
@@ -151,6 +184,12 @@ struct ReplicateCounters {
     std::size_t ecai_evaluations = 0;      // one per active row
     std::size_t susceptible_values_consumed = 0;  // 3 * active_count
     std::size_t infector_values_consumed = 0;     // 8 * k_total
+
+    // Probability-mode-only counters (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+    // section 4.2). Both stay zero in ECAi mode, exactly as negative_clamp_count
+    // and ecai_evaluations stay zero in probability mode.
+    std::size_t probability_evaluations = 0;  // one per active row, probability mode only
+    std::size_t saturated_count = 0;          // active rows whose probability == 1.0
 };
 
 // One simulation's audited identity, recorded from the materialized
@@ -163,6 +202,11 @@ struct RowAudit {
     double ecai_raw_l_s_person = 0.0;
     double ecai_l_s_person = 0.0;
     bool clamped = false;
+    // Probability-mode-only fields, populated instead of the two above when
+    // the replicate ran in probability mode; left at their defaults (0.0 /
+    // false) in ECAi mode.
+    double probability = 0.0;
+    bool saturated = false;
     // {susceptible_pbr, gamma, lambda}; all zero for an inactive row, which
     // consumes nothing.
     std::array<std::uint64_t, 3> susceptible_ids{};
@@ -194,9 +238,15 @@ struct ReplicateResult {
     // Exactly N values, in original simulation index order (never sorted).
     // Authoritative Stage 6 realized infector counts in the same stable order.
     std::vector<long long> infector_counts;
+    // The resolved mode this replicate ran in (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+    // section 4.2). Determines which of the two pairs below is populated;
+    // the other stays at its default (empty vector, 0.0 percentile).
+    OutputMode mode = OutputMode::ecai;
     std::vector<double> ecai_l_s_person;
     double percentile = 0.0;                // the p that was applied
-    double percentile_l_s_person = 0.0;     // raw, unrounded
+    double percentile_l_s_person = 0.0;     // raw, unrounded; ECAi mode only
+    std::vector<double> probability;        // probability mode only
+    double percentile_probability = 0.0;    // raw, unrounded; probability mode only
     ReplicateCounters counters;
     // Indexed by BankId ordinal.
     std::array<std::size_t, 11> planned_bank_lengths{};
@@ -310,11 +360,24 @@ inline ReplicateBatch run_replicates(
         throw std::runtime_error("simulation: unable to allocate replicate batch storage");
     }
 
+    // All replicates in one batch must resolve to the same mode: mode is not
+    // a fingerprint field, so nothing else enforces this, and run_replicates
+    // is the first point that observes every replicate's resolved mode
+    // together (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.2).
+    std::optional<OutputMode> batch_mode;
     for (std::size_t index = 0; index < replicate_count; ++index) {
         ReplicateResult result = run_replicate(base_seed, config,
                                                static_cast<std::uint64_t>(index), category,
                                                overrides, options);
-        raw_percentiles.push_back(result.percentile_l_s_person);
+        if (!batch_mode.has_value()) {
+            batch_mode = result.mode;
+        } else if (*batch_mode != result.mode) {
+            throw std::runtime_error(
+                "simulation: replicates within one batch resolved to different output modes");
+        }
+        raw_percentiles.push_back(result.mode == OutputMode::probability
+                                       ? result.percentile_probability
+                                       : result.percentile_l_s_person);
         batch.replicates.push_back(std::move(result));
     }
     batch.summary = statistics::summarize_replicates(raw_percentiles, config.confidence_level);

@@ -10,6 +10,7 @@
 
 #include "model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -186,6 +187,10 @@ using ecai_cpp2::model::compute_ecai;
 using ecai_cpp2::model::compute_ecai_from_qer_sum;
 using ecai_cpp2::model::ECAiInputs;
 using ecai_cpp2::model::ECAiResult;
+using ecai_cpp2::model::compute_probability;
+using ecai_cpp2::model::compute_probability_from_qer_sum;
+using ecai_cpp2::model::ProbabilityInputs;
+using ecai_cpp2::model::ProbabilityResult;
 
 // The shared, fully valid Stage 9 fixture used by the blocks below:
 //   PBR_s = 0.6 m^3/h, gamma = lambda = 0.5 1/h, VOL = 50 m^3, I0 = 10,
@@ -249,6 +254,52 @@ bool ecai_vector_throws_runtime_error(const ECAiInputs& in, const std::vector<do
     return false;
 }
 
+bool probability_throws_invalid_argument(const ProbabilityInputs& in, double qer_sum) {
+    try {
+        compute_probability_from_qer_sum(in, qer_sum);
+    } catch (const std::invalid_argument&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+bool probability_vector_throws_invalid_argument(const ProbabilityInputs& in,
+                                                 const std::vector<double>& qer) {
+    try {
+        compute_probability(in, qer);
+    } catch (const std::invalid_argument&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+bool probability_throws_runtime_error(const ProbabilityInputs& in, double qer_sum) {
+    try {
+        compute_probability_from_qer_sum(in, qer_sum);
+    } catch (const std::runtime_error&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+bool probability_vector_throws_runtime_error(const ProbabilityInputs& in,
+                                              const std::vector<double>& qer) {
+    try {
+        compute_probability(in, qer);
+    } catch (const std::runtime_error&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
 // Every double-valued ECAiInputs field, addressed via a setter closure, so
 // the NaN/+Inf/-Inf sweep can cover all seven of them without seven
 // near-identical call sites. The eighth input, `occupants`, is an integral
@@ -284,6 +335,64 @@ bool all_ecai_fields_finite(const ECAiResult& r) {
 // so downstream percentile/zero-counting cannot distinguish clamped rows by
 // a sign bit.
 bool is_exact_positive_zero(double v) { return v == 0.0 && !std::signbit(v); }
+
+// The shared, fully valid probability-mode fixture: the same physical
+// values as baseline_ecai_inputs() (PBR_s = 0.6 m^3/h, gamma = lambda = 0.5
+// 1/h, VOL = 50 m^3, I0 = 10, mu = 0, D = 1.0 h), with a fixed input ECAi
+// of 0 L/s/person in place of a target probability.
+ProbabilityInputs baseline_probability_inputs() {
+    ProbabilityInputs in;
+    in.susceptible_pbr_m3h = 0.6;
+    in.gamma_per_h = 0.5;
+    in.lambda_per_h = 0.5;
+    in.volume_m3 = 50.0;
+    in.occupants = 10;
+    in.mask_efficiency = 0.0;
+    in.duration_h = 1.0;
+    in.input_ecai_l_s_person = 0.0;
+    return in;
+}
+
+// Builds a ProbabilityInputs sharing the same seven physical fields as an
+// ECAiInputs fixture (everything but target_probability), at a
+// caller-supplied fixed input ECAi.
+ProbabilityInputs probability_inputs_from_ecai(const ECAiInputs& in, double input_ecai_l_s_person) {
+    ProbabilityInputs p;
+    p.susceptible_pbr_m3h = in.susceptible_pbr_m3h;
+    p.gamma_per_h = in.gamma_per_h;
+    p.lambda_per_h = in.lambda_per_h;
+    p.volume_m3 = in.volume_m3;
+    p.occupants = in.occupants;
+    p.mask_efficiency = in.mask_efficiency;
+    p.duration_h = in.duration_h;
+    p.input_ecai_l_s_person = input_ecai_l_s_person;
+    return p;
+}
+
+// Every double-valued ProbabilityInputs field, addressed via a setter
+// closure, so the NaN/+Inf/-Inf sweep can cover all seven of them (the same
+// six physical double fields as ECAiInputs, minus target_probability, plus
+// input_ecai_l_s_person) without seven near-identical call sites.
+// `occupants` is swept separately, like ECAiInputs.occupants.
+struct ProbabilityFieldSpec {
+    const char* name;
+    std::function<void(ProbabilityInputs&, double)> set;
+};
+
+const std::vector<ProbabilityFieldSpec>& all_probability_double_fields() {
+    static const std::vector<ProbabilityFieldSpec> fields = {
+        {"susceptible_pbr_m3h",
+         [](ProbabilityInputs& p, double v) { p.susceptible_pbr_m3h = v; }},
+        {"gamma_per_h", [](ProbabilityInputs& p, double v) { p.gamma_per_h = v; }},
+        {"lambda_per_h", [](ProbabilityInputs& p, double v) { p.lambda_per_h = v; }},
+        {"volume_m3", [](ProbabilityInputs& p, double v) { p.volume_m3 = v; }},
+        {"mask_efficiency", [](ProbabilityInputs& p, double v) { p.mask_efficiency = v; }},
+        {"duration_h", [](ProbabilityInputs& p, double v) { p.duration_h = v; }},
+        {"input_ecai_l_s_person",
+         [](ProbabilityInputs& p, double v) { p.input_ecai_l_s_person = v; }},
+    };
+    return fields;
+}
 
 }  // namespace
 
@@ -1376,6 +1485,410 @@ int main() {
         check(code_only.find("\nstatic ") == std::string::npos &&
                   code_only.find("\nstatic\t") == std::string::npos,
               "model.cpp declares no namespace-scope `static` (mutable global) state");
+    }
+
+    // ================================================================
+    // (25) Probability mode: round-trip identity
+    // (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 3.3-1). For an
+    // active row with T_ECAi > 0 (unclamped) and P_t in (0, 1), evaluating
+    // the forward probability at ECAi_in = ECAi_raw (unclamped) must
+    // return P == P_t to relative 1e-12. Exercised over several fixtures
+    // already pinned above (mask factor, duration, unit conversion, the
+    // frozen default target), so the round trip is checked against
+    // independently-derived ECAi_raw values, not against a value this test
+    // computes itself.
+    // ================================================================
+    {
+        struct RoundTripCase {
+            std::string label;
+            ECAiInputs ecai_in;
+            double qer_sum;
+        };
+        ECAiInputs masked = baseline_ecai_inputs();
+        masked.mask_efficiency = 0.30;
+        ECAiInputs two_hours = baseline_ecai_inputs();
+        two_hours.duration_h = 2.0;
+        ECAiInputs frozen_default = baseline_ecai_inputs();
+        frozen_default.target_probability = 0.001;
+
+        const std::vector<RoundTripCase> cases = {
+            {"baseline (P_t = 0.5)", baseline_ecai_inputs(), 200.0},
+            {"masked (mu = 0.30)", masked, 200.0},
+            {"two-hour duration", two_hours, 200.0},
+            {"frozen default target (P_t = 0.001)", frozen_default, 200.0},
+            {"single infector", baseline_ecai_inputs(), 100.0},
+        };
+
+        for (const auto& c : cases) {
+            const ECAiResult ecai_result = compute_ecai_from_qer_sum(c.ecai_in, c.qer_sum);
+            check(!ecai_result.clamped && ecai_result.ecai_raw_l_s_person > 0.0,
+                  "round trip [" + c.label + "]: precondition ECAi_raw > 0 (unclamped)");
+
+            const ProbabilityInputs prob_in =
+                probability_inputs_from_ecai(c.ecai_in, ecai_result.ecai_raw_l_s_person);
+            const ProbabilityResult prob_result =
+                compute_probability_from_qer_sum(prob_in, c.qer_sum);
+
+            check(approx(prob_result.probability, c.ecai_in.target_probability,
+                         /*abs_tol=*/0.0, /*rel_tol=*/1e-12),
+                  "round trip [" + c.label + "]: P(ECAi_raw) == target_probability to relative "
+                  "1e-12");
+            check(!prob_result.saturated, "round trip [" + c.label + "]: not saturated");
+        }
+    }
+
+    // ================================================================
+    // (26) Probability mode: indicator identity (section 3.3-2). For any
+    // X >= 0 and any row, P_i(X) > P_t  <=>  ECAi_raw_i > X, where
+    // ECAi_raw_i is the row's own unclamped ECAi_raw at the same target
+    // P_t. Six rows (distinct QER_sum, hence distinct ECAi_raw) at the
+    // shared fixture's physical values and the frozen default target
+    // P_t = 0.001; three threshold values X spanning below/within/above the
+    // spread of ECAi_raw. Numerically the two sides may disagree by one
+    // row when |ECAi_raw_i - X| <= 1e-9 * max(1, |X|); those near-tie rows
+    // are excluded from the identity check, as the plan specifies.
+    // ================================================================
+    {
+        ECAiInputs ecai_fixture = baseline_ecai_inputs();
+        ecai_fixture.target_probability = 0.001;
+        const double target_p = ecai_fixture.target_probability;
+
+        const std::vector<double> qer_sums = {1.0, 5.0, 10.0, 50.0, 100.0, 500.0};
+        std::vector<double> ecai_raws;
+        for (double qer : qer_sums) {
+            const ECAiResult r = compute_ecai_from_qer_sum(ecai_fixture, qer);
+            check(!r.clamped, "indicator identity: fixture ECAi_raw is unclamped for QER_sum = " +
+                                   std::to_string(qer));
+            ecai_raws.push_back(r.ecai_raw_l_s_person);
+        }
+
+        const double min_raw = *std::min_element(ecai_raws.begin(), ecai_raws.end());
+        const double max_raw = *std::max_element(ecai_raws.begin(), ecai_raws.end());
+        const std::vector<double> thresholds = {std::max(0.0, min_raw - 1.0),
+                                                  (min_raw + max_raw) / 2.0, max_raw + 1.0};
+
+        for (double x : thresholds) {
+            for (std::size_t i = 0; i < qer_sums.size(); ++i) {
+                const double tol = 1e-9 * std::max(1.0, std::fabs(x));
+                if (std::fabs(ecai_raws[i] - x) <= tol) continue;  // excluded near-tie band
+
+                const ProbabilityInputs prob_in = probability_inputs_from_ecai(ecai_fixture, x);
+                const ProbabilityResult prob_result =
+                    compute_probability_from_qer_sum(prob_in, qer_sums[i]);
+
+                const bool p_above_target = prob_result.probability > target_p;
+                const bool ecai_above_x = ecai_raws[i] > x;
+                check(p_above_target == ecai_above_x,
+                      "indicator identity: P_i(X) > P_t iff ECAi_raw_i > X (X = " +
+                          std::to_string(x) + ", row QER_sum = " + std::to_string(qer_sums[i]) +
+                          ")");
+            }
+        }
+    }
+
+    // ================================================================
+    // (27) Probability mode: order-statistic identity (section 3.3-3),
+    // computed without depending on simulation.cpp's percentile_linear
+    // (out of scope for this phase): N = 26 rows (distinct QER_sum, hence
+    // distinct unclamped ECAi_raw with no tie), p = 0.96, so
+    // rank = p * (N - 1) = 24.0 exactly. X is the row-wise ECAi_raw order
+    // statistic at that exact rank. In probability mode with ECAi_in = X,
+    // the same-rank order statistic of the row-wise probabilities equals
+    // P_t: indicator identity (26) makes exactly 24 rows have
+    // ECAi_raw < X (hence P < P_t), exactly 1 row have ECAi_raw > X (hence
+    // P > P_t), and the row at X itself have P == P_t -- not because the
+    // sort order of probabilities matches the sort order of ECAi_raw in
+    // general (it need not, when PBR_s/gamma/lambda vary per row; the plan
+    // requires the test not assert full order preservation).
+    // ================================================================
+    {
+        constexpr int kN = 26;
+        constexpr int kRank = 24;  // p * (N - 1) = 0.96 * 25 = 24.0 exactly
+        ECAiInputs ecai_fixture = baseline_ecai_inputs();
+        ecai_fixture.target_probability = 0.001;
+        const double target_p = ecai_fixture.target_probability;
+
+        std::vector<double> qer_sums;
+        std::vector<double> ecai_raws;
+        for (int i = 0; i < kN; ++i) {
+            const double qer = 1.0 + static_cast<double>(i) * 3.0;  // 1, 4, 7, ..., distinct
+            qer_sums.push_back(qer);
+            const ECAiResult r = compute_ecai_from_qer_sum(ecai_fixture, qer);
+            check(!r.clamped,
+                  "order statistic: row " + std::to_string(i) + " ECAi_raw is unclamped");
+            ecai_raws.push_back(r.ecai_raw_l_s_person);
+        }
+
+        std::vector<double> sorted_raws = ecai_raws;
+        std::sort(sorted_raws.begin(), sorted_raws.end());
+        check(sorted_raws[kRank - 1] != sorted_raws[kRank] &&
+                  sorted_raws[kRank] != sorted_raws[kRank + 1],
+              "order statistic: the rank-24 ECAi_raw order statistic is unique (no tie)");
+        const double x = sorted_raws[kRank];
+
+        std::vector<double> probabilities;
+        for (int i = 0; i < kN; ++i) {
+            const ProbabilityInputs prob_in = probability_inputs_from_ecai(ecai_fixture, x);
+            const ProbabilityResult prob_result =
+                compute_probability_from_qer_sum(prob_in, qer_sums[i]);
+            probabilities.push_back(prob_result.probability);
+        }
+        std::sort(probabilities.begin(), probabilities.end());
+
+        check(approx(probabilities[kRank], target_p, /*abs_tol=*/0.0, /*rel_tol=*/1e-10),
+              "order statistic: sorted_P[24] == P_t to relative 1e-10 at ECAi_in = the rank-24 "
+              "ECAi_raw order statistic");
+    }
+
+    // ================================================================
+    // (28) Probability mode: saturation (section 3.2's numerical
+    // saturation policy). Fixture engineered so quanta_inhaled Q equals
+    // qer_sum exactly: input_ecai = 0 (so ECA_total = 0), PBR_s = D =
+    // mask_factor = 1, and VOL * (gamma + lambda) = 1.
+    // ================================================================
+    {
+        ProbabilityInputs sat = baseline_probability_inputs();
+        sat.susceptible_pbr_m3h = 1.0;
+        sat.gamma_per_h = 0.5;
+        sat.lambda_per_h = 0.5;
+        sat.volume_m3 = 1.0;
+        sat.duration_h = 1.0;
+        sat.mask_efficiency = 0.0;
+        sat.input_ecai_l_s_person = 0.0;
+
+        const ProbabilityResult q_1000 = compute_probability_from_qer_sum(sat, 1000.0);
+        check(approx(q_1000.quanta_inhaled, 1000.0),
+              "saturation: Q == qer_sum for the engineered fixture (Q = 1000)");
+        check(q_1000.probability == 1.0 && q_1000.saturated,
+              "saturation: Q = 1e3 gives P == 1.0 exactly and saturated == true");
+
+        const ProbabilityResult q_50 = compute_probability_from_qer_sum(sat, 50.0);
+        check(q_50.probability == 1.0 && q_50.saturated,
+              "saturation: Q = 50 gives P == 1.0 exactly and saturated == true");
+
+        const ProbabilityResult q_20 = compute_probability_from_qer_sum(sat, 20.0);
+        check(q_20.probability < 1.0 && !q_20.saturated,
+              "saturation: Q = 20 gives P < 1.0 and saturated == false");
+    }
+
+    // ================================================================
+    // (29) Probability mode: overflow rejection (section 3.2, "Finiteness
+    // (every intermediate, in order)"). A pathological input_ecai overflows
+    // ECA_total; a pathological duration/QER_sum overflows dose_numerator;
+    // a QER vector whose sum overflows is rejected before either fixed
+    // point is reached. Every case throws std::runtime_error naming the
+    // offending intermediate, never a nonfinite probability.
+    // ================================================================
+    {
+        ProbabilityInputs overflow_eca = baseline_probability_inputs();
+        overflow_eca.occupants = 1000;
+        overflow_eca.input_ecai_l_s_person = 1e308;
+        check(probability_throws_runtime_error(overflow_eca, 1.0),
+              "overflow: ECA_total overflow (input_ecai = 1e308, I0 = 1000) throws "
+              "std::runtime_error");
+        try {
+            compute_probability_from_qer_sum(overflow_eca, 1.0);
+            check(false, "overflow: expected an exception for the ECA_total overflow fixture");
+        } catch (const std::runtime_error& e) {
+            const std::string message = e.what();
+            check(message.find("ECA_total") != std::string::npos,
+                  "overflow: the ECA_total overflow message names the offending intermediate");
+        }
+
+        ProbabilityInputs overflow_dose = baseline_probability_inputs();
+        overflow_dose.duration_h = 24.0;
+        check(probability_throws_runtime_error(overflow_dose,
+                                                std::numeric_limits<double>::max()),
+              "overflow: dose_numerator overflow (duration = 24h, QER_sum = DBL_MAX) throws "
+              "std::runtime_error");
+        try {
+            compute_probability_from_qer_sum(overflow_dose, std::numeric_limits<double>::max());
+            check(false, "overflow: expected an exception for the dose_numerator overflow "
+                          "fixture");
+        } catch (const std::runtime_error& e) {
+            const std::string message = e.what();
+            check(message.find("dose_numerator") != std::string::npos,
+                  "overflow: the dose_numerator overflow message names the offending "
+                  "intermediate");
+        }
+
+        check(probability_vector_throws_runtime_error(
+                  baseline_probability_inputs(),
+                  std::vector<double>{std::numeric_limits<double>::max(),
+                                       std::numeric_limits<double>::max()}),
+              "overflow: a QER vector whose sum overflows to infinity throws "
+              "std::runtime_error");
+    }
+
+    // ================================================================
+    // (30) Probability mode: invalid-input rejection (section 4.1, "the
+    // seven checks of validate_ecai_inputs ... with 'ProbabilityInputs.'
+    // message prefix", plus input_ecai_l_s_person finite and >= 0).
+    // ProbabilityInputs has no target field to reject.
+    // ================================================================
+    {
+        const double kNaN = std::numeric_limits<double>::quiet_NaN();
+        const double kInf = std::numeric_limits<double>::infinity();
+
+        bool nonfinite_rejected = true;
+        for (const auto& field : all_probability_double_fields()) {
+            for (double bad : {kNaN, kInf, -kInf}) {
+                ProbabilityInputs in = baseline_probability_inputs();
+                field.set(in, bad);
+                nonfinite_rejected =
+                    nonfinite_rejected && probability_throws_invalid_argument(in, 200.0);
+            }
+        }
+        check(nonfinite_rejected,
+              "probability validation: NaN or +/-Inf in any of the seven double inputs (incl. "
+              "input_ecai_l_s_person) is rejected");
+
+        bool positivity_rejected = true;
+        for (double bad : {0.0, -0.0, -1e-300, -1.0}) {
+            ProbabilityInputs pbr = baseline_probability_inputs();
+            pbr.susceptible_pbr_m3h = bad;
+            ProbabilityInputs lam = baseline_probability_inputs();
+            lam.lambda_per_h = bad;
+            ProbabilityInputs vol = baseline_probability_inputs();
+            vol.volume_m3 = bad;
+            positivity_rejected = positivity_rejected &&
+                                   probability_throws_invalid_argument(pbr, 200.0) &&
+                                   probability_throws_invalid_argument(lam, 200.0) &&
+                                   probability_throws_invalid_argument(vol, 200.0);
+        }
+        check(positivity_rejected,
+              "probability validation: a nonpositive PBR_s, lambda, or VOL is rejected");
+
+        bool gamma_bounds_ok = true;
+        for (double bad : {0.41, 0.0, 0.62, 5.0}) {
+            ProbabilityInputs in = baseline_probability_inputs();
+            in.gamma_per_h = bad;
+            gamma_bounds_ok = gamma_bounds_ok && probability_throws_invalid_argument(in, 200.0);
+        }
+        for (double good : {0.42, 0.61}) {
+            ProbabilityInputs in = baseline_probability_inputs();
+            in.gamma_per_h = good;
+            gamma_bounds_ok = gamma_bounds_ok && !probability_throws_invalid_argument(in, 200.0);
+        }
+        check(gamma_bounds_ok,
+              "probability validation: gamma outside its Table 1 [0.42, 0.61] hard bounds is "
+              "rejected, both endpoints accepted");
+
+        bool occupants_rejected = true;
+        for (long long bad : {0LL, -1LL, -1000LL}) {
+            ProbabilityInputs in = baseline_probability_inputs();
+            in.occupants = bad;
+            occupants_rejected =
+                occupants_rejected && probability_throws_invalid_argument(in, 200.0);
+        }
+        check(occupants_rejected, "probability validation: a nonpositive occupant count is "
+                                   "rejected");
+
+        bool input_ecai_rejected = true;
+        for (double bad : {-1e-300, -1.0, -1000.0}) {
+            ProbabilityInputs in = baseline_probability_inputs();
+            in.input_ecai_l_s_person = bad;
+            input_ecai_rejected =
+                input_ecai_rejected && probability_throws_invalid_argument(in, 200.0);
+        }
+        check(input_ecai_rejected,
+              "probability validation: a negative input_ecai_l_s_person is rejected");
+
+        ProbabilityInputs zero_ecai = baseline_probability_inputs();
+        zero_ecai.input_ecai_l_s_person = 0.0;
+        check(!probability_throws_invalid_argument(zero_ecai, 200.0),
+              "probability validation: input_ecai_l_s_person == 0.0 is accepted (boundary)");
+
+        ProbabilityInputs mask_below = baseline_probability_inputs();
+        mask_below.mask_efficiency = std::nextafter(0.0, -1.0);
+        ProbabilityInputs mask_above = baseline_probability_inputs();
+        mask_above.mask_efficiency = std::nextafter(1.0, 2.0);
+        check(probability_throws_invalid_argument(mask_below, 200.0) &&
+                  probability_throws_invalid_argument(mask_above, 200.0),
+              "probability validation: the first double below 0 and the first above 1 for "
+              "mask_efficiency are both rejected");
+
+        bool qer_rejected =
+            probability_throws_invalid_argument(baseline_probability_inputs(), -1e-12) &&
+            probability_throws_invalid_argument(baseline_probability_inputs(), -200.0) &&
+            probability_throws_invalid_argument(baseline_probability_inputs(), kNaN) &&
+            probability_throws_invalid_argument(baseline_probability_inputs(), kInf) &&
+            probability_throws_invalid_argument(baseline_probability_inputs(), -kInf) &&
+            probability_vector_throws_invalid_argument(baseline_probability_inputs(),
+                                                        std::vector<double>{40.0, -1.0, 60.0}) &&
+            probability_vector_throws_invalid_argument(baseline_probability_inputs(),
+                                                        std::vector<double>{40.0, kNaN});
+        check(qer_rejected,
+              "probability validation: a negative or nonfinite QER value (per-infector or "
+              "pre-summed) is rejected");
+
+        try {
+            ProbabilityInputs bad_pbr = baseline_probability_inputs();
+            bad_pbr.susceptible_pbr_m3h = -1.0;
+            compute_probability_from_qer_sum(bad_pbr, 200.0);
+            check(false, "probability validation: expected an exception for a negative PBR_s");
+        } catch (const std::invalid_argument& e) {
+            const std::string message = e.what();
+            check(message.rfind("ProbabilityInputs.", 0) == 0,
+                  "probability validation: the rejection message is prefixed "
+                  "\"ProbabilityInputs.\"");
+        }
+    }
+
+    // ================================================================
+    // (31) Probability mode: zero dose (section 3.2, "P == 0 for an active
+    // row occurs only when dose_num == 0"). An empty QER vector, an
+    // explicit {0, 0, 0} QER vector, mu == 1 (perfect mask) with a positive
+    // QER, and a pre-summed QER_sum of exactly 0 all yield P == 0.0
+    // exactly, never -0.0.
+    // ================================================================
+    {
+        ProbabilityInputs in = baseline_probability_inputs();
+        in.input_ecai_l_s_person = 5.0;  // nonzero fixed ECA; removal/Q are otherwise unremarkable
+
+        const ProbabilityResult empty = compute_probability(in, std::vector<double>{});
+        const ProbabilityResult zeros = compute_probability(in, std::vector<double>{0.0, 0.0, 0.0});
+        const ProbabilityResult presummed = compute_probability_from_qer_sum(in, 0.0);
+
+        check(empty.probability == 0.0 && !std::signbit(empty.probability),
+              "probability zero dose: an empty QER vector yields exactly +0.0");
+        check(zeros.probability == 0.0 && !std::signbit(zeros.probability),
+              "probability zero dose: an explicit {0,0,0} QER vector yields exactly +0.0");
+        check(presummed.probability == 0.0 && !std::signbit(presummed.probability),
+              "probability zero dose: a pre-summed QER_sum of 0 yields exactly +0.0");
+        check(!empty.saturated && !zeros.saturated && !presummed.saturated,
+              "probability zero dose: none of the zero-dose results are saturated");
+
+        ProbabilityInputs perfect_mask = baseline_probability_inputs();
+        perfect_mask.mask_efficiency = 1.0;
+        const ProbabilityResult masked = compute_probability_from_qer_sum(perfect_mask, 200.0);
+        check(masked.mask_factor == 0.0 && masked.dose_numerator == 0.0 &&
+                  masked.probability == 0.0 && !std::signbit(masked.probability),
+              "probability zero dose: mu = 1.0 (perfect mask) zeroes dose_numerator and yields "
+              "exactly +0.0 with a positive QER");
+    }
+
+    // ================================================================
+    // (32) Probability mode: signed zero. A -0.0 QER entry is a legitimate
+    // zero (accepted, not rejected) and must not turn the exact +0.0
+    // zero-dose result into -0.0; likewise Q == 0 must give P == +0.0,
+    // mirroring compute_ecai_from_qer_sum's own sign-normalization clamp.
+    // ================================================================
+    {
+        ProbabilityInputs in = baseline_probability_inputs();
+        in.input_ecai_l_s_person = 5.0;
+
+        const ProbabilityResult negative_zero_qer =
+            compute_probability(in, std::vector<double>{-0.0, -0.0});
+        check(negative_zero_qer.probability == 0.0 && !std::signbit(negative_zero_qer.probability),
+              "probability signed zero: -0.0 QER entries are accepted and still yield exactly "
+              "+0.0 probability");
+
+        const ProbabilityResult zero_dose = compute_probability_from_qer_sum(in, 0.0);
+        check(zero_dose.quanta_inhaled == 0.0 && !std::signbit(zero_dose.quanta_inhaled) &&
+                  zero_dose.probability == 0.0 && !std::signbit(zero_dose.probability),
+              "probability signed zero: Q == 0 gives P == +0.0 exactly (sign-normalized), never "
+              "-0.0");
     }
 
     if (g_failures > 0) {

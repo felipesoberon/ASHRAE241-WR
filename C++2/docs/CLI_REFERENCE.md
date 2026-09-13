@@ -21,7 +21,7 @@ execution; there is no default category and none is inferred.
 
 ## Flags
 
-The interface accepts exactly 17 flags:
+The interface accepts exactly 19 flags:
 
 - `--category NAME` — occupancy category. Required. No default.
 - `--simulations N` — simulations per replicate. Default `10000`.
@@ -35,11 +35,33 @@ The interface accepts exactly 17 flags:
 - `--occupants I0` — maximum occupants. Default: the selected category value.
 - `--volume-m3 VOLUME` — space volume in m³. Default: the selected category value.
 - `--mask-efficiency FRACTION` — mask efficiency. Default: the selected category value.
+- `--mode MODE` — output mode, `ecai` or `probability`, case sensitive, no aliases. Default `ecai`.
+- `--input-ecai ECAI` — fixed input ECAi for probability mode, L/s/person, finite and `>= 0`.
+  Requires `--mode probability`. Default: the selected category's published Table 4 ECAi.
 - `--output-directory PATH` — output directory; requests `summary.csv`.
 - `--summary-file PATH` — literal summary CSV destination override.
 - `--replicates-file PATH` — literal per-replicate CSV destination override.
 - `--write-replicates` — boolean; requests per-replicate output.
 - `--help` — print the help text and exit. Must be the only argument.
+
+## Output mode
+
+`ecai_cpp2` supports two output modes, selected with `--mode`:
+
+- `ecai` (default): inverts Eqs. 1, 2, 6 and 7 for the ECAi that reproduces
+  `--target-probability` over the effective duration. Identical to every invocation before
+  `--mode` existed; omitting `--mode` or passing `--mode ecai` explicitly is byte-identical.
+- `probability`: evaluates the forward Wells-Riley infection probability (Eq. 1 forward) for
+  every sampled row at a fixed **input** ECAi, and reports the configurable within-replicate
+  percentile (default `0.96`) of those per-simulation probabilities alongside the existing
+  across-replicate statistics. See `docs/MODEL_SPECIFICATION.md` §3.1 for the forward equation,
+  row rules, saturation, and comparator semantics, and `docs/SEED_POLICY.md` for what is and is
+  not fingerprinted across modes.
+
+`--input-ecai` is only accepted together with `--mode probability`; omitting it resolves to the
+selected category's published Table 4 ECAi (`input_ecai_source=published_table4`). An explicit
+value (`input_ecai_source=explicit`) marks the run a custom scenario. `--mode` alone — including
+an explicit `--mode ecai` — never marks a run custom.
 
 ## Category selection
 
@@ -77,6 +99,8 @@ Defaults applied when a flag is omitted:
 | `--occupants I0` | category value | integer, `>= 1`, fits a 64-bit signed integer |
 | `--volume-m3 VOLUME` | category value | finite, `> 0` |
 | `--mask-efficiency FRACTION` | category value | `0 <= FRACTION <= 1` |
+| `--mode MODE` | `ecai` | `ecai` or `probability`, case sensitive, no aliases |
+| `--input-ecai ECAI` | category's published Table 4 ECAi (probability mode only) | finite, `>= 0`; only accepted with `--mode probability` |
 
 The 20 general categories use community rate `0.01` and mask efficiency `0`.
 The five categories in the Health Care group use community rate `0.03` and mask
@@ -136,6 +160,7 @@ override is supplied:
 - `--occupants`
 - `--volume-m3`
 - `--mask-efficiency`
+- `--input-ecai`
 
 Explicitly supplying a value equal to the default still counts as an override
 for provenance purposes; for example `--duration-hours 1` marks the run custom.
@@ -146,6 +171,7 @@ These flags never make a run custom on their own:
 - `--replicates`
 - `--base-seed`
 - `--confidence`
+- `--mode`
 - `--output-directory`, `--summary-file`, `--replicates-file`, `--write-replicates`
 
 Per-field provenance is recorded separately for the four category inputs
@@ -179,15 +205,31 @@ Statistics are computed from the raw per-replicate percentile estimates.
 ## Console output
 
 A valid run prints exactly one line to standard output, at round-trip
-precision, for example:
+precision. In `ecai` mode (default):
 
 ```text
 console_summary (not a CSV file) category="Patient room" raw_mean_l_s_person=41.606977504215571 ceiling_to_5_l_s_person=45
 ```
 
-This is a console summary, not CSV output. Each statistic appears once. The
-category is the canonical publication name. CSV output is opt-in and is written
-only after complete validation of the document and destinations.
+In `probability` mode the line instead reports the resolved input ECAi, the
+requested percentile, the raw mean probability, the target, and the
+comparator status, for example:
+
+```text
+console_summary (not a CSV file) mode=probability category="Patient room" input_ecai_l_s_person=35 percentile=0.96 raw_mean_probability=0.66694130367595861 target_probability=0.001 comparator_status=ABOVE_TARGET
+```
+
+Probability-mode comparator status is one of `AT_TARGET_WITHIN_10PCT`,
+`BELOW_TARGET`, `ABOVE_TARGET` (comparator-eligible runs), or
+`NOT_APPLICABLE_CUSTOM` (any custom scenario, including an explicit
+`--input-ecai`) — a distinct vocabulary from the ECAi-mode comparator status
+below.
+
+The percentile is always printed as a number (never a `p96`-style label), so
+any `--percentile` value renders unambiguously. These are console summaries,
+not CSV output. Each statistic appears once. The category is the canonical
+publication name. CSV output is opt-in and is written only after complete
+validation of the document and destinations.
 
 ## Output files
 
@@ -268,6 +310,36 @@ or `FAIL_GT_ONE_INCREMENT`. Signed and absolute differences are both emitted.
 For a custom scenario, `comparator_eligible=false`, status is
 `NOT_APPLICABLE_CUSTOM`, and the published comparator and difference fields are
 empty.
+
+### Probability-mode CSV schema
+
+A `--mode probability` run writes its own document, never the ECAi schema above; the two are
+never mixed in one file. `schema_version=stage13-prob-v1`.
+
+The probability summary schema has exactly **96 columns** and one row. Most source-category
+columns (7–25) and explicit-provenance columns (78–94) are byte-identical in name and order to
+the corresponding ECAi summary columns; the remaining columns are probability-mode specific,
+including `mode`, `input_ecai_l_s_person`, `input_ecai_source` (`published_table4` or
+`explicit`), `effective_eca_total_m3_h`, `zero_infector_policy`, `probability_policy`
+(`forward_wells_riley_expm1`), `saturation_policy` (`probability_one_is_numerical_saturation`),
+`comparator_target_probability`, `comparator_signed_difference`, `comparator_ratio`,
+`comparator_status`, the `raw_*_probability` statistics, `all_replicates_saturated_count`, and
+`all_replicates_probability_evaluations`. Columns that would be misleading in this mode are
+deliberately absent: `negative_clamping_policy`, `all_replicates_negative_clamp_count`,
+`all_replicates_ecai_evaluations`, `published_comparator_l_s_person`,
+`comparator_abs_difference_l_s_person`, `ceiling_to_5_l_s_person` — probability mode never
+negative-clamps and has no ceiling-to-5 comparator.
+
+The probability replicate schema has exactly **20 columns** and R rows: the ECAi replicate schema
+plus a `mode` column and `raw_percentile_probability`/`saturated_count`/
+`probability_evaluations` in place of `raw_percentile_l_s_person`/`negative_clamp_count`/
+`ecai_evaluations`.
+
+For R=1, the same dispersion-unavailable convention applies: `dispersion_status=
+UNAVAILABLE_SINGLE_REPLICATE` and the six named dispersion fields are empty, not zero or NaN.
+
+No field ever contains a signed zero in either schema; a zero-infector row's probability is
+always exact positive `+0.0`.
 
 ## Errors
 

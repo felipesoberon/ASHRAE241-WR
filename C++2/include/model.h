@@ -145,6 +145,82 @@ ECAiResult compute_ecai_from_qer_sum(const ECAiInputs& inputs, double qer_sum_pe
 // and yields exactly 0 L/s/person.
 ECAiResult compute_ecai(const ECAiInputs& inputs, const std::vector<double>& qer_per_h);
 
+// ===================================================================
+// Probability mode: forward Wells-Riley infection-probability evaluation at
+// a fixed input ECAi.
+//
+// Source of truth: docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 3.2
+// ("New forward evaluation (probability mode)"). This is the algebraic
+// mirror of compute_ecai_from_qer_sum/compute_ecai above: instead of
+// inverting Eq. 1 for the ECAi that reproduces a target probability, it
+// evaluates Eq. 1 forward for the probability produced by a caller-supplied
+// ECAi. It is deliberately decoupled from any target probability: it takes
+// no target, validates none, and reads none. Pure function: no randomness,
+// no global mutable state, no bank or cursor access.
+// ===================================================================
+
+// One active simulation's non-QER inputs to the forward evaluation. Same
+// seven physical fields as ECAiInputs (everything except
+// target_probability), plus the fixed input ECAi the forward equation
+// consumes instead. Units:
+//   susceptible_pbr_m3h   : m^3/h   (PBR_s, Eq. 2)
+//   gamma_per_h           : 1/h     (surface deposition rate, Eq. 6)
+//   lambda_per_h          : 1/h     (biological decay, Eq. 6)
+//   volume_m3             : m^3     (VOL)
+//   occupants             : count   (I0, Eq. 7)
+//   mask_efficiency       : -       (mu, Eq. 2)
+//   duration_h            : h       (D, Eq. 2)
+//   input_ecai_l_s_person : L/s/person, finite and >= 0 (the fixed input
+//                           ECAi; Eq. 7 forward)
+struct ProbabilityInputs {
+    double susceptible_pbr_m3h = 0.0;
+    double gamma_per_h = 0.0;
+    double lambda_per_h = 0.0;
+    double volume_m3 = 0.0;
+    long long occupants = 0;
+    double mask_efficiency = 0.0;
+    double duration_h = 0.0;
+    double input_ecai_l_s_person = 0.0;
+};
+
+// Every intermediate of the forward evaluation, exposed so the result can be
+// audited term by term. Units:
+//   eca_total_m3_per_h : m^3/h    (Eq. 7 forward: 3.6 * I0 * input ECAi)
+//   removal_m3_per_h   : m^3/h    (total removal, ECA_total + VOL*(gamma+lambda))
+//   mask_factor        : dimensionless ((1 - mu)^2)
+//   qer_sum_per_h      : quanta/h (sum over the realized infectors)
+//   dose_numerator     : m^3 quanta / h (PBR_s * D * mask_factor * QER_sum)
+//   quanta_inhaled     : quanta, dimensionless (Q = dose_numerator / removal)
+//   probability        : dimensionless, in the closed range [0, 1], never
+//                        -0.0 (P = -expm1(-Q), sign-normalized to +0.0)
+//   saturated          : true iff probability == 1.0 exactly, i.e. Q is
+//                        large enough that -expm1(-Q) rounds to 1.0 in
+//                        double precision (numerical saturation, not an
+//                        error; see the plan's saturation policy)
+struct ProbabilityResult {
+    double eca_total_m3_per_h = 0.0;
+    double removal_m3_per_h = 0.0;
+    double mask_factor = 0.0;
+    double qer_sum_per_h = 0.0;
+    double dose_numerator = 0.0;
+    double quanta_inhaled = 0.0;
+    double probability = 0.0;
+    bool saturated = false;
+};
+
+// Computes one simulation's forward infection probability from a pre-summed
+// QER, at the caller-supplied fixed input ECAi. Pure function: no
+// randomness, no global mutable state, no bank or cursor access.
+ProbabilityResult compute_probability_from_qer_sum(const ProbabilityInputs& inputs,
+                                                    double qer_sum_per_h);
+
+// Convenience overload: sums `qer_per_h` in the supplied order (matching
+// compute_ecai's summation policy) and delegates to
+// compute_probability_from_qer_sum. An empty vector is the explicit
+// zero-QER case and yields exactly +0.0 probability.
+ProbabilityResult compute_probability(const ProbabilityInputs& inputs,
+                                       const std::vector<double>& qer_per_h);
+
 }  // namespace model
 }  // namespace ecai_cpp2
 

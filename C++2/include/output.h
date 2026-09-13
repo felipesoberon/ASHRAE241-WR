@@ -15,6 +15,11 @@ namespace ecai_cpp2::output {
 
 inline constexpr const char* kModelVersion = "ASHRAE241-Jones-2025-Cpp2-v1";
 inline constexpr const char* kOutputSchemaVersion = "stage13-v1";
+// Probability-mode document schema
+// (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 5). The ECAi schema
+// above is unaffected: build_document dispatches to build_probability_document
+// only when the resolved run is in probability mode.
+inline constexpr const char* kProbabilitySchemaVersion = "stage13-prob-v1";
 
 struct OutputDocument {
     std::vector<std::string> summary_columns;

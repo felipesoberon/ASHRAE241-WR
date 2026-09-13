@@ -223,5 +223,157 @@ ECAiResult compute_ecai(const ECAiInputs& inputs, const std::vector<double>& qer
     return compute_ecai_from_qer_sum(inputs, qer_sum_per_h);
 }
 
+// ===================================================================
+// Probability mode: forward evaluation (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 3.2, 4.1). Deliberately decoupled from target_probability: the
+// validation and arithmetic below never read or reject a target.
+// ===================================================================
+
+namespace {
+
+// Stage "probability mode" validation helpers. Separate from both the
+// Stage 8 (InfectorParameters) and Stage 9 (ECAiInputs) helpers only so the
+// thrown message names ProbabilityInputs; the policy is identical
+// (finiteness first, then the physical domain, and no input is ever
+// clamped into range).
+void require_probability_finite(double value, const char* field_name) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument(std::string("ProbabilityInputs.") + field_name +
+                                     " must be finite");
+    }
+}
+
+void require_probability_positive(double value, const char* field_name) {
+    require_probability_finite(value, field_name);
+    if (!(value > 0.0)) {
+        throw std::invalid_argument(std::string("ProbabilityInputs.") + field_name +
+                                     " must be strictly positive");
+    }
+}
+
+void require_probability_in_range(double value, double lo, double hi, const char* field_name) {
+    require_probability_finite(value, field_name);
+    if (value < lo || value > hi) {
+        throw std::invalid_argument(std::string("ProbabilityInputs.") + field_name +
+                                     " must lie within [" + std::to_string(lo) + ", " +
+                                     std::to_string(hi) + "]");
+    }
+}
+
+void require_probability_nonnegative(double value, const char* field_name) {
+    require_probability_finite(value, field_name);
+    if (!(value >= 0.0)) {
+        throw std::invalid_argument(std::string("ProbabilityInputs.") + field_name +
+                                     " must be nonnegative");
+    }
+}
+
+// Every computed intermediate must stay finite: an overflow to +/-Inf (or a
+// NaN) is reported rather than returned as a probability.
+void require_finite_probability_intermediate(double value, const char* what) {
+    if (!std::isfinite(value)) {
+        throw std::runtime_error(std::string("probability ") + what +
+                                  " is not finite (overflow or invalid intermediate)");
+    }
+}
+
+// Full domain check for the seven physical inputs plus the fixed input
+// ECAi, run before any arithmetic. Bounds mirror validate_ecai_inputs
+// exactly (same seven physical fields; PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 4.1), minus target_probability (there is none) plus
+// input_ecai_l_s_person (finite, >= 0).
+void validate_probability_inputs(const ProbabilityInputs& inputs) {
+    require_probability_positive(inputs.susceptible_pbr_m3h, "susceptible_pbr_m3h");
+    require_probability_in_range(inputs.gamma_per_h, 0.42, 0.61, "gamma_per_h");
+    require_probability_positive(inputs.lambda_per_h, "lambda_per_h");
+    require_probability_positive(inputs.volume_m3, "volume_m3");
+    if (inputs.occupants <= 0) {
+        throw std::invalid_argument("ProbabilityInputs.occupants must be a positive count");
+    }
+    require_probability_in_range(inputs.mask_efficiency, 0.0, 1.0, "mask_efficiency");
+    require_probability_positive(inputs.duration_h, "duration_h");
+    require_probability_nonnegative(inputs.input_ecai_l_s_person, "input_ecai_l_s_person");
+}
+
+}  // namespace
+
+ProbabilityResult compute_probability_from_qer_sum(const ProbabilityInputs& inputs,
+                                                    double qer_sum_per_h) {
+    validate_probability_inputs(inputs);
+    require_qer_value(qer_sum_per_h, "Probability QER_sum");
+
+    // Eq. 7 forward: input ECAi (L/s/person) -> total effective clean air
+    // delivery (m^3/h) at the effective occupancy.
+    const double eca_total_m3_per_h = kM3PerHourPerLitrePerSecond *
+                                       static_cast<double>(inputs.occupants) *
+                                       inputs.input_ecai_l_s_person;
+    require_finite_probability_intermediate(eca_total_m3_per_h, "ECA_total");
+
+    // Total removal: the fixed ECA plus the sampled surface/decay loss term.
+    // Strictly positive given validated inputs (ECA_total >= 0, VOL > 0,
+    // gamma + lambda > 0), so the division for Q below is never by zero.
+    const double removal_m3_per_h =
+        eca_total_m3_per_h + inputs.volume_m3 * (inputs.gamma_per_h + inputs.lambda_per_h);
+    require_finite_probability_intermediate(removal_m3_per_h, "Lambda");
+
+    // mask_factor = (1 - mu)^2 (Eq. 2), formed by one multiplication so the
+    // factor is applied exactly once.
+    const double one_minus_mu = 1.0 - inputs.mask_efficiency;
+    const double mask_factor = one_minus_mu * one_minus_mu;
+
+    const double dose_numerator =
+        inputs.susceptible_pbr_m3h * inputs.duration_h * mask_factor * qer_sum_per_h;
+    require_finite_probability_intermediate(dose_numerator, "dose_numerator");
+
+    const double quanta_inhaled = dose_numerator / removal_m3_per_h;
+    require_finite_probability_intermediate(quanta_inhaled, "Q");
+    if (!(quanta_inhaled >= 0.0)) {
+        // Impossible after the validation above (every factor of
+        // dose_numerator and removal_m3_per_h is nonnegative/positive); a
+        // negative Q here would indicate a defect elsewhere, not a
+        // reachable input state, so it is reported rather than clamped.
+        throw std::runtime_error("probability Q is negative (impossible after validation; "
+                                  "indicates a defect)");
+    }
+
+    // Eq. 1 forward: P = 1 - exp(-Q), evaluated as -expm1(-Q) to retain
+    // relative precision for the small Q the default target implies.
+    const double p_raw = -std::expm1(-quanta_inhaled);
+    require_finite_probability_intermediate(p_raw, "P_raw");
+
+    ProbabilityResult result;
+    result.eca_total_m3_per_h = eca_total_m3_per_h;
+    result.removal_m3_per_h = removal_m3_per_h;
+    result.mask_factor = mask_factor;
+    result.qer_sum_per_h = qer_sum_per_h;
+    result.dose_numerator = dose_numerator;
+    result.quanta_inhaled = quanta_inhaled;
+    // Sign normalization, mirroring compute_ecai_from_qer_sum's clamp: only
+    // a strictly positive raw value passes through, so a zero-dose or
+    // signed-zero result can never carry a negative sign bit forward.
+    result.probability = (p_raw > 0.0) ? p_raw : 0.0;
+    // P == 1.0 exactly is reachable once exp(-Q) underflows below 2^-53;
+    // this is numerical saturation of -expm1(-Q) in double precision, not
+    // an error, and is recorded rather than rejected.
+    result.saturated = (result.probability == 1.0);
+    return result;
+}
+
+ProbabilityResult compute_probability(const ProbabilityInputs& inputs,
+                                       const std::vector<double>& qer_per_h) {
+    // Same left-to-right, order-preserving accumulation policy as
+    // compute_ecai above.
+    double qer_sum_per_h = 0.0;
+    for (const double qer : qer_per_h) {
+        require_qer_value(qer, "Probability QER_i");
+        qer_sum_per_h += qer;
+    }
+    if (!std::isfinite(qer_sum_per_h)) {
+        throw std::runtime_error(
+            "Probability QER_sum overflowed while summing the supplied QER values");
+    }
+    return compute_probability_from_qer_sum(inputs, qer_sum_per_h);
+}
+
 }  // namespace model
 }  // namespace ecai_cpp2

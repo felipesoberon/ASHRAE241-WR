@@ -151,3 +151,10 @@ generated test output. These are deterministic regression, wiring, and accountin
 Passing them is compatible with a failed publication comparator and does not establish scientific
 validity. Any future 10,000 × 500 run requires explicit authorization and must be reported
 separately without replacing these bounded reference rows.
+
+## Probability-mode verification
+
+Probability outputs are bounded to [0,1]. A value of 1.0 is permitted numerical saturation, not
+an error. Zero-infector outputs normalize to +0.0. Nonfinite intermediates are rejected, and
+rejected invocations produce no output. Verification currently passes 12/12 CTest plus 133 output
+checks.

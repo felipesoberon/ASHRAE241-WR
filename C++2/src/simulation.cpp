@@ -58,6 +58,18 @@ void validate_evaluation_order(EvaluationOrder order) {
     throw std::invalid_argument("simulation: unknown EvaluationOrder");
 }
 
+// Rejects an OutputMode outside the declared enum before any scenario field
+// is trusted (same defensive pattern as validate_evaluation_order above; no
+// `default:` label, so a future third enumerator trips -Wswitch).
+void validate_output_mode(OutputMode mode) {
+    switch (mode) {
+        case OutputMode::ecai:
+        case OutputMode::probability:
+            return;
+    }
+    throw std::invalid_argument("simulation: unknown OutputMode");
+}
+
 // Cross-checks the four inputs to run_replicate_from_plan before any bank is
 // built: config and scenario must name the same canonical category as the
 // supplied record, every config scientific/run input must equal the
@@ -108,6 +120,21 @@ void validate_scenario(const EffectiveScenario& scenario) {
     }
     require_positive(scenario.duration_hours, "duration_hours");
     require_in_closed_unit(scenario.percentile, "percentile");
+
+    validate_output_mode(scenario.mode);
+    if (scenario.mode == OutputMode::probability) {
+        require_finite(scenario.input_ecai_l_s_person, "input_ecai_l_s_person");
+        if (!(scenario.input_ecai_l_s_person >= 0.0)) {
+            throw std::invalid_argument("simulation: input_ecai_l_s_person must be >= 0");
+        }
+    } else {
+        // An ECAi scenario carrying a probability-mode input is a defect in
+        // the caller, not a user error: reject rather than silently ignore.
+        if (scenario.input_ecai_overridden || scenario.input_ecai_l_s_person != 0.0) {
+            throw std::invalid_argument(
+                "simulation: an ECAi-mode scenario must not carry a probability-mode input ECAi");
+        }
+    }
 }
 
 // Rejects a malformed plan before any work: the same accounting contract
@@ -171,6 +198,56 @@ std::vector<std::size_t> build_schedule(const std::vector<std::size_t>& active_i
     throw std::invalid_argument("simulation: unknown EvaluationOrder");
 }
 
+// Step 3's probability-mode counterpart. Row loop, QER accumulation and
+// scratch-vector reuse are identical to the ECAi loop in
+// run_replicate_from_banks; only the per-row model call and the fields it
+// writes differ (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.3).
+// Kept as a separate function, rather than inlined into the ECAi loop, so
+// that loop's text stays byte-identical to its pre-probability-mode form.
+void evaluate_probability_schedule(const std::vector<std::size_t>& schedule,
+                                    const sampling_plan::ReplicateAssignments& assignments,
+                                    const EffectiveScenario& scenario,
+                                    const ReplicateOptions& options, ReplicateResult& result) {
+    std::vector<double> qer_per_h;
+    model::ProbabilityInputs inputs;
+    inputs.volume_m3 = scenario.volume_m3;
+    inputs.occupants = scenario.occupants;
+    inputs.mask_efficiency = scenario.mask_efficiency;
+    inputs.duration_h = scenario.duration_hours;
+    inputs.input_ecai_l_s_person = scenario.input_ecai_l_s_person;
+    for (const std::size_t row : schedule) {
+        const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
+        qer_per_h.clear();
+        qer_per_h.reserve(simulation.infectors.size());
+        for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
+            qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
+            ++result.counters.qer_evaluations;
+        }
+
+        inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+        inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+        inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+        const model::ProbabilityResult probability = model::compute_probability(inputs, qer_per_h);
+        ++result.counters.probability_evaluations;
+        if (probability.saturated) {
+            ++result.counters.saturated_count;
+        }
+        if (!std::isfinite(probability.probability)) {
+            throw std::runtime_error(
+                "simulation: a nonfinite probability was produced at simulation " +
+                std::to_string(row));
+        }
+        result.probability[row] = probability.probability;
+        if (options.collect_audit) {
+            RowAudit& audit_row = result.audit.rows[row];
+            audit_row.qer_sum_per_h = probability.qer_sum_per_h;
+            audit_row.probability = probability.probability;
+            audit_row.saturated = probability.saturated;
+        }
+    }
+}
+
 }  // namespace
 
 double percentile_linear(const std::vector<double>& values, double p) {
@@ -229,6 +306,32 @@ EffectiveScenario resolve_scenario(const OccupancyCategory& category,
     scenario.duration_hours = config.duration_hours;
     scenario.percentile = config.percentile;
 
+    // Branch from the resolved scenario mode (overrides.mode), never from a
+    // raw override value alone: this is the single source of truth every
+    // downstream consumer (simulation, and eventually output) dispatches on.
+    validate_output_mode(overrides.mode);
+    scenario.mode = overrides.mode;
+    if (scenario.mode == OutputMode::probability) {
+        scenario.input_ecai_l_s_person = overrides.input_ecai_l_s_person
+                                              ? *overrides.input_ecai_l_s_person
+                                              : category.published_ecai_Lsp;
+        scenario.input_ecai_overridden = overrides.input_ecai_l_s_person.has_value();
+        if (!overrides.input_ecai_l_s_person) {
+            // Defensive: the published Table 4 value is never expected to be
+            // out of domain, but resolution still checks it before it is
+            // trusted as the probability-mode default.
+            if (!std::isfinite(category.published_ecai_Lsp) || category.published_ecai_Lsp < 0.0) {
+                throw std::invalid_argument(
+                    "resolve_scenario: category published_ecai_Lsp is not a finite, "
+                    "non-negative value");
+            }
+        }
+    }
+    // In ECAi mode, input_ecai_l_s_person and input_ecai_overridden stay at
+    // their EffectiveScenario defaults (0.0 / false) regardless of
+    // overrides.input_ecai_l_s_person: the CLI has already rejected supplying
+    // --input-ecai without --mode probability.
+
     scenario.occupants_overridden = overrides.occupants.has_value();
     scenario.volume_overridden = overrides.volume_m3.has_value();
     scenario.mask_efficiency_overridden = overrides.mask_efficiency.has_value();
@@ -276,6 +379,7 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     validate_evaluation_order(options.evaluation_order);
 
     ReplicateResult result;
+    result.mode = scenario.mode;
     result.percentile = scenario.percentile;
     result.counters.n = plan.n;
     result.infector_counts = plan.counts;
@@ -283,8 +387,12 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     // Step 1: every zero-infector row becomes exactly +0.0 before any
     // assignment or model input is requested (MODEL_SPECIFICATION.md 11.1,
     // D3). The whole output vector is initialized to +0.0, so an active row
-    // that is later clamped also lands on +0.0.
-    result.ecai_l_s_person.assign(plan.n, 0.0);
+    // that is later clamped also lands on +0.0. `outputs` names whichever of
+    // the two mode-specific vectors this replicate populates; the other
+    // stays empty.
+    std::vector<double>& outputs =
+        (scenario.mode == OutputMode::probability) ? result.probability : result.ecai_l_s_person;
+    outputs.assign(plan.n, 0.0);
     for (std::size_t i = 0; i < plan.counts.size(); ++i) {
         if (plan.counts[i] == 0) {
             ++result.counters.zero_infector_count;
@@ -355,51 +463,55 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     if (options.collect_audit) {
         result.audit.evaluation_order = schedule;
     }
-    // One scratch QER list for the whole schedule: it is emptied and then
-    // filled in list order for each row, so its contents when compute_ecai
-    // runs are exactly that row's per-infector QERs in the same order as
-    // before. The room-level inputs are the same for every row and are set
-    // once; only the susceptible's three values change per row.
-    std::vector<double> qer_per_h;
-    model::ECAiInputs inputs;
-    inputs.volume_m3 = scenario.volume_m3;
-    inputs.occupants = scenario.occupants;
-    inputs.mask_efficiency = scenario.mask_efficiency;
-    inputs.duration_h = scenario.duration_hours;
-    inputs.target_probability = scenario.target_probability;
-    for (const std::size_t row : schedule) {
-        const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
-        qer_per_h.clear();
-        qer_per_h.reserve(simulation.infectors.size());
-        for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
-            qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
-            ++result.counters.qer_evaluations;
-        }
+    if (scenario.mode == OutputMode::ecai) {
+        // One scratch QER list for the whole schedule: it is emptied and then
+        // filled in list order for each row, so its contents when compute_ecai
+        // runs are exactly that row's per-infector QERs in the same order as
+        // before. The room-level inputs are the same for every row and are set
+        // once; only the susceptible's three values change per row.
+        std::vector<double> qer_per_h;
+        model::ECAiInputs inputs;
+        inputs.volume_m3 = scenario.volume_m3;
+        inputs.occupants = scenario.occupants;
+        inputs.mask_efficiency = scenario.mask_efficiency;
+        inputs.duration_h = scenario.duration_hours;
+        inputs.target_probability = scenario.target_probability;
+        for (const std::size_t row : schedule) {
+            const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
+            qer_per_h.clear();
+            qer_per_h.reserve(simulation.infectors.size());
+            for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
+                qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
+                ++result.counters.qer_evaluations;
+            }
 
-        inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
-        inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
-        inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+            inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+            inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+            inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
 
-        const model::ECAiResult ecai = model::compute_ecai(inputs, qer_per_h);
-        ++result.counters.ecai_evaluations;
-        if (ecai.clamped) {
-            ++result.counters.negative_clamp_count;
+            const model::ECAiResult ecai = model::compute_ecai(inputs, qer_per_h);
+            ++result.counters.ecai_evaluations;
+            if (ecai.clamped) {
+                ++result.counters.negative_clamp_count;
+            }
+            if (!std::isfinite(ecai.ecai_l_s_person)) {
+                throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
+                                          std::to_string(row));
+            }
+            result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
+            if (options.collect_audit) {
+                RowAudit& audit_row = result.audit.rows[row];
+                audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
+                audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
+                audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
+                audit_row.clamped = ecai.clamped;
+            }
         }
-        if (!std::isfinite(ecai.ecai_l_s_person)) {
-            throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
-                                      std::to_string(row));
-        }
-        result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
-            audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
-            audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
-            audit_row.clamped = ecai.clamped;
-        }
+    } else {
+        evaluate_probability_schedule(schedule, assignments, scenario, options, result);
     }
 
-    for (const double value : result.ecai_l_s_person) {
+    for (const double value : outputs) {
         if (value == 0.0) {
             ++result.counters.output_zero_count;
         }
@@ -419,7 +531,11 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     }
 
     // Step 4: the frozen percentile, from a sorted copy.
-    result.percentile_l_s_person = percentile_linear(result.ecai_l_s_person, scenario.percentile);
+    if (scenario.mode == OutputMode::probability) {
+        result.percentile_probability = percentile_linear(outputs, scenario.percentile);
+    } else {
+        result.percentile_l_s_person = percentile_linear(outputs, scenario.percentile);
+    }
     return result;
 }
 

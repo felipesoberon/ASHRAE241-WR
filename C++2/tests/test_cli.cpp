@@ -226,10 +226,11 @@ int main() {
             "--percentile",         "--confidence",      "--target-probability",
             "--duration-hours",     "--base-seed",       "--community-rate",
             "--occupants",          "--volume-m3",       "--mask-efficiency",
+            "--mode",               "--input-ecai",
             "--output-directory",   "--summary-file",    "--replicates-file",
             "--write-replicates",   "--help"};
         check(planned.size() == cli::accepted_flags().size(),
-              "the parser accepts exactly the 17 planned flags");
+              "the parser accepts exactly the 19 planned flags");
         for (const std::string& flag : planned) {
             bool known = false;
             for (const std::string& parser_flag : cli::accepted_flags()) {
@@ -366,6 +367,134 @@ int main() {
             check(cli::parse_cli(args).custom_scenario,
                   "explicit --volume-m3 marks the run as a custom scenario");
         }
+    }
+
+    // --- Output mode: --mode / --input-ecai parsing (additive; see
+    // docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 9.3 T8) -----------
+    {
+        const cli::CliOptions options = cli::parse_cli(bounded_args());
+        check(options.mode == simulation::OutputMode::ecai,
+              "the default output mode is ecai");
+        check(!options.mode_explicit, "the default output mode is not marked explicit");
+        check(!options.input_ecai_l_s_person.has_value(),
+              "there is no input ECAi override by default");
+    }
+    {
+        const cli::CliOptions options = cli::parse_cli(with_flag("--mode", "probability"));
+        check(options.mode == simulation::OutputMode::probability,
+              "--mode probability parses");
+        check(options.mode_explicit, "an explicit --mode is recorded as explicit");
+        check(!options.custom_scenario, "--mode alone never marks the run a custom scenario");
+    }
+    {
+        const cli::CliOptions options = cli::parse_cli(with_flag("--mode", "ecai"));
+        check(options.mode == simulation::OutputMode::ecai,
+              "an explicit --mode ecai parses");
+        check(options.mode_explicit, "an explicit --mode ecai is still recorded as explicit");
+        check(!options.custom_scenario, "an explicit --mode ecai does not mark the run custom");
+    }
+    expect_reject(with_flag("--mode", "Probability"),
+                  "a wrong-case --mode value (case sensitive, no aliases)");
+    expect_reject(with_flag("--mode", "ECAI"), "a wrong-case --mode value");
+    expect_reject(with_flag("--mode", "foo"), "an unknown --mode value");
+    expect_reject(with_flag("--mode", ""), "an empty --mode value");
+    {
+        Args args = bounded_args();
+        args.push_back("--mode");
+        args.push_back("probability");
+        args.push_back("--mode");
+        args.push_back("ecai");
+        expect_reject(args, "a duplicate --mode flag");
+    }
+    expect_reject(with_flag("--input-ecai", "30"),
+                  "--input-ecai without --mode probability");
+    {
+        Args args = with_flag("--mode", "probability");
+        args.push_back("--input-ecai");
+        args.push_back("30");
+        const cli::CliOptions options = cli::parse_cli(args);
+        check(options.input_ecai_l_s_person.has_value() && *options.input_ecai_l_s_person == 30.0,
+              "--input-ecai parses alongside --mode probability");
+        check(options.custom_scenario, "an explicit --input-ecai marks the run a custom scenario");
+    }
+    {
+        Args args = with_flag("--mode", "probability");
+        args.push_back("--input-ecai");
+        args.push_back("-1");
+        expect_reject(args, "a negative --input-ecai value");
+    }
+    {
+        Args args = with_flag("--mode", "probability");
+        args.push_back("--input-ecai");
+        args.push_back("nan");
+        expect_reject(args, "a non-finite --input-ecai value");
+    }
+    {
+        Args args = with_flag("--mode", "probability");
+        args.push_back("--input-ecai");
+        args.push_back("0");
+        const cli::CliOptions options = cli::parse_cli(args);
+        check(options.input_ecai_l_s_person.has_value() && *options.input_ecai_l_s_person == 0.0,
+              "--input-ecai accepts exactly 0");
+    }
+
+    // --- Output mode: scenario resolution (additive) ------------------------
+    {
+        const cli::ResolvedRun run = cli::resolve_run(cli::parse_cli(bounded_args()));
+        check(run.scenario.mode == simulation::OutputMode::ecai,
+              "a bare run resolves to ecai mode");
+        check(run.scenario.input_ecai_l_s_person == 0.0,
+              "ecai mode carries no probability-mode input ECAi");
+        check(!run.scenario.input_ecai_overridden,
+              "ecai mode never reports an input-ECAi override");
+        check(run.overrides.mode == simulation::OutputMode::ecai,
+              "the effective overrides record ecai mode by default");
+        check(!run.overrides.input_ecai_l_s_person.has_value(),
+              "the effective overrides carry no input ECAi by default");
+    }
+    {
+        const cli::ResolvedRun run =
+            cli::resolve_run(cli::parse_cli(with_flag("--mode", "probability")));
+        check(run.scenario.mode == simulation::OutputMode::probability,
+              "--mode probability resolves to probability mode");
+        check(run.scenario.input_ecai_l_s_person == run.category->published_ecai_Lsp,
+              "with no --input-ecai override, probability mode defaults to the category's "
+              "published Table 4 ECAi");
+        check(!run.scenario.input_ecai_overridden,
+              "no explicit --input-ecai leaves input_ecai_overridden false");
+        check(!run.custom_scenario,
+              "--mode probability alone (no --input-ecai) is not a custom scenario");
+    }
+    {
+        Args args = with_flag("--mode", "probability");
+        args.push_back("--input-ecai");
+        args.push_back("42.5");
+        const cli::ResolvedRun run = cli::resolve_run(cli::parse_cli(args));
+        check(run.scenario.mode == simulation::OutputMode::probability,
+              "--mode probability with an explicit --input-ecai resolves to probability mode");
+        check(run.scenario.input_ecai_l_s_person == 42.5,
+              "an explicit --input-ecai reaches the resolved scenario");
+        check(run.scenario.input_ecai_overridden,
+              "an explicit --input-ecai sets input_ecai_overridden");
+        check(run.custom_scenario, "an explicit --input-ecai marks the resolved run custom");
+        check(run.overrides.mode == simulation::OutputMode::probability &&
+                  run.overrides.input_ecai_l_s_person.has_value() &&
+                  *run.overrides.input_ecai_l_s_person == 42.5,
+              "the effective overrides carry the explicit mode and input ECAi");
+    }
+    {
+        // Tamper check, mirroring the existing scalar-provenance tamper block
+        // above: an out-of-band mode change without mode_explicit must be
+        // rejected, not silently accepted.
+        cli::CliOptions options = cli::parse_cli(bounded_args());
+        options.mode = simulation::OutputMode::probability;
+        bool rejected = false;
+        try {
+            cli::resolve_run(options);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected, "resolve_run rejects an unprovenanced change to the output mode");
     }
 
     // --- Structural rejections ----------------------------------------------

@@ -105,6 +105,7 @@ using ecai_cpp2::seed_manager::EffectiveConfig;
 using ecai_cpp2::simulation::EffectiveOverrides;
 using ecai_cpp2::simulation::EffectiveScenario;
 using ecai_cpp2::simulation::EvaluationOrder;
+using ecai_cpp2::simulation::OutputMode;
 using ecai_cpp2::simulation::ReplicateOptions;
 using ecai_cpp2::simulation::ReplicateResult;
 
@@ -136,6 +137,19 @@ double expected_ecai(double pbr_s, double gamma, double lambda, double volume, l
     const double term2 = volume * (gamma + lambda);
     const double raw = (term1 - term2) / (3.6 * static_cast<double>(i0));
     return raw > 0.0 ? raw : 0.0;
+}
+
+// The forward probability evaluation (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 3.2), written out directly rather than via model::compute_probability.
+double expected_probability(double pbr_s, double gamma, double lambda, double volume, long long i0,
+                            double mu, double duration_h, double input_ecai, double qer_sum) {
+    const double eca_total = 3.6 * static_cast<double>(i0) * input_ecai;
+    const double removal = eca_total + volume * (gamma + lambda);
+    const double mask_factor = (1.0 - mu) * (1.0 - mu);
+    const double dose_numerator = pbr_s * duration_h * mask_factor * qer_sum;
+    const double q = dose_numerator / removal;
+    const double p_raw = -std::expm1(-q);
+    return p_raw > 0.0 ? p_raw : 0.0;
 }
 
 // numpy.percentile "linear" (Type 7), written out independently here.
@@ -313,6 +327,41 @@ std::vector<double> fixture_expected_outputs() {
     expected[4] = expected_ecai(kSusceptiblePbr[2], kGamma[2], kLambda[2], s.volume_m3,
                                 s.occupants, s.mask_efficiency, s.duration_hours,
                                 s.target_probability, qer3);
+    return expected;
+}
+
+// Same fixture, resolved into probability mode at a moderate fixed input
+// ECAi chosen so that none of the three active rows saturates.
+EffectiveScenario fixture_probability_scenario() {
+    EffectiveScenario scenario = fixture_scenario();
+    scenario.mode = OutputMode::probability;
+    scenario.input_ecai_l_s_person = 5.0;
+    return scenario;
+}
+
+// The three active rows' expected forward probability at fixture_probability_
+// scenario()'s input ECAi, computed from the fixture contents through the
+// test-owned equations above (same QER values as fixture_expected_outputs).
+std::vector<double> fixture_expected_probabilities(double input_ecai) {
+    const double qer0 = expected_qer(kInfectorPbr[0], kCDrop[0], kDBar[0], kE[0], kGvl[0], kVf[0],
+                                     kRtd[0], kDk[0]);
+    const double qer1 = expected_qer(kInfectorPbr[1], kCDrop[1], kDBar[1], kE[1], kGvl[1], kVf[1],
+                                     kRtd[1], kDk[1]);
+    const double qer2 = expected_qer(kInfectorPbr[2], kCDrop[2], kDBar[2], kE[2], kGvl[2], kVf[2],
+                                     kRtd[2], kDk[2]);
+    const double qer3 = expected_qer(kInfectorPbr[3], kCDrop[3], kDBar[3], kE[3], kGvl[3], kVf[3],
+                                     kRtd[3], kDk[3]);
+    const EffectiveScenario s = fixture_scenario();
+    std::vector<double> expected(5, 0.0);
+    expected[1] = expected_probability(kSusceptiblePbr[0], kGamma[0], kLambda[0], s.volume_m3,
+                                       s.occupants, s.mask_efficiency, s.duration_hours,
+                                       input_ecai, qer0);
+    expected[2] = expected_probability(kSusceptiblePbr[1], kGamma[1], kLambda[1], s.volume_m3,
+                                       s.occupants, s.mask_efficiency, s.duration_hours,
+                                       input_ecai, qer1 + qer2);
+    expected[4] = expected_probability(kSusceptiblePbr[2], kGamma[2], kLambda[2], s.volume_m3,
+                                       s.occupants, s.mask_efficiency, s.duration_hours,
+                                       input_ecai, qer3);
     return expected;
 }
 
@@ -1082,6 +1131,160 @@ void test_interleaved_schedule_pinned() {
     }
 }
 
+// ------------------------------------------------------------------
+// Section 6: probability mode (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 4.2/4.3).
+// ------------------------------------------------------------------
+
+void test_probability_injected_fixture() {
+    ReplicateOptions options;
+    options.collect_audit = true;
+    const EffectiveScenario scenario = fixture_probability_scenario();
+    const ReplicateResult result = ecai_cpp2::simulation::run_replicate_from_banks(
+        fixture_plan(), fixture_banks(), scenario, options);
+
+    check(result.mode == OutputMode::probability,
+          "probability-mode replicate reports mode == probability");
+    check(result.probability.size() == 5,
+          "probability-mode fixture emits exactly N = 5 probabilities");
+    check(result.ecai_l_s_person.empty(),
+          "probability-mode replicate leaves ecai_l_s_person empty");
+    check(result.percentile_l_s_person == 0.0,
+          "probability-mode replicate leaves percentile_l_s_person at 0");
+
+    const std::vector<double> expected =
+        fixture_expected_probabilities(scenario.input_ecai_l_s_person);
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        check(approx(result.probability[i], expected[i]),
+              "probability fixture row " + std::to_string(i) +
+                  " equals its independently computed probability");
+    }
+
+    check(is_positive_zero(result.probability[0]) && is_positive_zero(result.probability[3]),
+          "zero-infector rows 0 and 3 are exactly +0.0 in probability mode");
+    check(result.probability[1] > 0.0 && result.probability[2] > 0.0 &&
+              result.probability[4] > 0.0,
+          "active rows produce strictly positive probabilities (no negative clamping in "
+          "probability mode)");
+    bool all_in_range = true;
+    for (const double v : result.probability) {
+        if (!std::isfinite(v) || !(v >= 0.0) || !(v <= 1.0)) all_in_range = false;
+    }
+    check(all_in_range, "every probability lies in the finite closed range [0, 1]");
+
+    check(result.counters.negative_clamp_count == 0, "probability mode never negative-clamps");
+    check(result.counters.ecai_evaluations == 0, "probability mode makes no ECAi evaluation");
+    check(result.counters.probability_evaluations == 3,
+          "one probability evaluation per active row");
+    check(result.counters.saturated_count == 0,
+          "the fixture's moderate input ECAi does not saturate any row");
+    check(result.counters.output_zero_count == 2,
+          "probability mode has no clamp source, so output zeros equal zero-infector rows only");
+    check(result.counters.qer_evaluations == 4, "one QER evaluation per realized infector");
+
+    check(approx(result.percentile_probability, expected_percentile(expected, 0.96)),
+          "probability fixture percentile matches the independently interpolated value");
+    check(result.percentile == 0.96, "percentile echoes the scenario's requested percentile");
+
+    check(result.audit.rows[1].probability > 0.0 && !result.audit.rows[1].saturated,
+          "audit rows record the per-row probability and saturation flag");
+    check(is_positive_zero(result.audit.rows[0].probability) && !result.audit.rows[0].saturated,
+          "a zero-infector row's audit entry carries +0.0 and is not saturated");
+}
+
+void test_cross_mode_identity() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    const EffectiveConfig config = make_config(patient, 64);
+
+    ReplicateOptions options;
+    options.collect_audit = true;
+
+    EffectiveOverrides ecai_overrides;  // default mode == ecai
+    EffectiveOverrides probability_overrides;
+    probability_overrides.mode = OutputMode::probability;
+
+    const ReplicateResult ecai_result =
+        ecai_cpp2::simulation::run_replicate(485, config, 3, patient, ecai_overrides, options);
+    const ReplicateResult probability_result = ecai_cpp2::simulation::run_replicate(
+        485, config, 3, patient, probability_overrides, options);
+
+    check(ecai_result.mode == OutputMode::ecai, "the ECAi-mode run reports mode == ecai");
+    check(probability_result.mode == OutputMode::probability,
+          "the probability-mode run reports mode == probability");
+
+    // Neither mode nor input ECAi is a fingerprint field, so identical seeds
+    // must yield identical plans, banks, assignments and cursors
+    // (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 6).
+    check(ecai_result.infector_counts == probability_result.infector_counts,
+          "both modes realize the identical Stage 6 infector-count vector");
+    check(ecai_result.planned_bank_lengths == probability_result.planned_bank_lengths &&
+              ecai_result.final_cursors == probability_result.final_cursors &&
+              ecai_result.bank_generated == probability_result.bank_generated,
+          "both modes plan, fill and exhaust identical bank lengths and cursors");
+    check(ecai_result.cursors_exhausted && probability_result.cursors_exhausted,
+          "both modes exhaust every cursor exactly");
+    check(ecai_result.counters.active_count == probability_result.counters.active_count &&
+              ecai_result.counters.k_total == probability_result.counters.k_total &&
+              ecai_result.counters.zero_infector_count ==
+                  probability_result.counters.zero_infector_count,
+          "both modes agree on active/k_total/zero-infector counts");
+    check(ecai_result.counters.qer_evaluations == probability_result.counters.qer_evaluations,
+          "both modes evaluate the identical number of QERs");
+
+    check(ecai_result.audit.consumption_ids == probability_result.audit.consumption_ids,
+          "both modes consume the identical parameter values in the identical order");
+    check(ecai_result.audit.evaluation_order == probability_result.audit.evaluation_order,
+          "both modes evaluate the same active rows in the same schedule");
+
+    bool rows_match = ecai_result.audit.rows.size() == probability_result.audit.rows.size();
+    bool qer_sums_match = true;
+    for (std::size_t row = 0; rows_match && row < ecai_result.audit.rows.size(); ++row) {
+        const auto& e = ecai_result.audit.rows[row];
+        const auto& p = probability_result.audit.rows[row];
+        if (e.simulation_index != p.simulation_index || e.infector_count != p.infector_count ||
+            e.active != p.active || e.susceptible_ids != p.susceptible_ids ||
+            e.infector_ids != p.infector_ids) {
+            rows_match = false;
+        }
+        if (!bitwise_equal(e.qer_sum_per_h, p.qer_sum_per_h)) qer_sums_match = false;
+    }
+    check(rows_match, "both modes assign identical people (ids) to identical simulation rows");
+    check(qer_sums_match, "both modes compute bit-identical per-row QER sums");
+
+    // Mode isolation: each mode populates only its own pair of fields.
+    check(ecai_result.probability.empty() && ecai_result.percentile_probability == 0.0 &&
+              ecai_result.counters.probability_evaluations == 0 &&
+              ecai_result.counters.saturated_count == 0,
+          "the ECAi-mode result carries no probability-mode field");
+    check(probability_result.ecai_l_s_person.empty() &&
+              probability_result.percentile_l_s_person == 0.0 &&
+              probability_result.counters.negative_clamp_count == 0 &&
+              probability_result.counters.ecai_evaluations == 0,
+          "the probability-mode result carries no ECAi-mode field");
+
+    check(!probability_result.probability.empty() &&
+              probability_result.probability.size() == ecai_result.ecai_l_s_person.size(),
+          "the probability-mode result emits as many probabilities as the ECAi-mode result "
+          "emits ECAi values");
+
+    bool zero_infectors_are_positive_zero = true;
+    bool all_in_range = true;
+    for (std::size_t row = 0; row < probability_result.infector_counts.size(); ++row) {
+        const double v = probability_result.probability[row];
+        if (probability_result.infector_counts[row] == 0 && !is_positive_zero(v)) {
+            zero_infectors_are_positive_zero = false;
+        }
+        if (!std::isfinite(v) || !(v >= 0.0) || !(v <= 1.0)) all_in_range = false;
+    }
+    check(zero_infectors_are_positive_zero,
+          "every zero-infector row is exactly +0.0 in probability mode too");
+    check(all_in_range, "every probability-mode output lies in the finite closed range [0, 1]");
+
+    check(approx(probability_result.percentile_probability,
+                 expected_percentile(probability_result.probability, 0.96)),
+          "the probability-mode percentile matches the independently interpolated Type-7 value");
+}
+
 }  // namespace
 
 int main() {
@@ -1099,6 +1302,8 @@ int main() {
     test_invalid_evaluation_order_rejected();
     test_run_replicate_from_plan_context_mismatch();
     test_interleaved_schedule_pinned();
+    test_probability_injected_fixture();
+    test_cross_mode_identity();
 
     std::cout << g_checks << " checks executed.\n";
     if (g_checks == 0) {

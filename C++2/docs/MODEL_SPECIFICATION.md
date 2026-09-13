@@ -202,6 +202,103 @@ only — Section 1 of `IMPLEMENTATION_PLAN.md` does not list an RR output):**
 `RR = (φ1 · I0,2) / (φ2 · I0,1)`
 (subscript 1 = baseline/starting conditions, subscript 2 = intervention.)
 
+### 3.1 Forward probability evaluation used by probability mode (C++2-specific, algebraic mirror of §3 above)
+
+`ecai_cpp2` supports a second output mode, selected with `--mode probability` (default remains
+`--mode ecai`, byte-identical to the mode's absence). Instead of inverting Eqs. 1, 2, 6 and 7 for
+the ECAi that reproduces a target probability, probability mode takes a fixed **input** ECAi
+(the selected category's published Table 4 value, §8 below, unless `--input-ecai` supplies an
+explicit one) and evaluates Eq. 1 **forward** for every sampled simulation row. This is a C++2
+engineering addition, not a separate Jones et al. equation; it is the algebraic mirror of the
+frozen inversion already documented above, using the same Eqs. 1, 2, 6 and 7.
+
+```text
+ECA_total  = 3.6 * I0 * ECAi_in                            [m^3/h]   (Eq. 7, forward)
+Lambda     = ECA_total + VOL * (gamma + lambda)            [m^3/h]   (Eq. 6, total removal)
+dose_num   = PBR_s * D * (1 - mu)^2 * QER_sum               [m^3 quanta / h]
+Q          = dose_num / Lambda                              [quanta, dimensionless]
+P_raw      = -expm1(-Q)                                     (Eq. 1, forward)
+P          = (P_raw > 0) ? P_raw : +0.0                     (sign normalization)
+```
+
+`-expm1(-Q)` is used instead of `1 - exp(-Q)` to retain relative precision for the small `Q`
+(~1e-3) the default target implies. The forward evaluation is deliberately decoupled from
+`target_probability`: it takes no target, validates none, and reads none. The target is used only
+as a comparator at the output stage (below), exactly as Table 4's published ECAi is a comparator
+for the ECAi-mode raw mean.
+
+**Row rules, implemented exactly as in ECAi mode's zero-infector shortcut:**
+
+- A zero-infector row is set to `P = +0.0` exactly before any bank value is requested; no
+  equation runs. This mirrors the ECAi-mode shortcut (§11.1) and consumes no other sampled value.
+- `Lambda > 0` always, given a validated `ECAi_in >= 0`, `VOL > 0` and `gamma + lambda > 0`, so
+  there is no division by zero and no clamp is applied; `negative_clamp_count` is structurally
+  zero in this mode and is not reported.
+- **Range:** `Q >= 0` and finite implies `P` lies in the **closed** interval `[0, 1]`. `P == 1.0`
+  exactly is reachable: IEEE-754 double `-expm1(-Q)` rounds to `1.0` once `exp(-Q) < 2^-53`
+  (`Q` beyond roughly `36.7`). This is **numerical saturation** of the forward formula in double
+  precision, not a model claim that infection is certain, and not an error. It is recorded per
+  row as `saturated = (P == 1.0)` and counted per replicate (`saturated_count`).
+- Every intermediate (`ECA_total`, `Lambda`, `dose_num`, `Q`, `P_raw`) is checked finite before
+  use; a non-finite intermediate (for example an overflowing `ECA_total` from a pathological
+  `--input-ecai`) is rejected with a diagnostic naming the intermediate rather than silently
+  propagated. `Q >= 0` is additionally asserted; a negative `Q` is impossible after input
+  validation and would indicate a defect, so it is reported rather than clamped.
+- `P == 0` for an active row occurs only when `dose_num == 0` (mask efficiency `mu == 1`, or an
+  underflowed `QER_sum`); `compute_qer` guarantees `QER_i > 0` for in-domain inputs, so this is
+  the only active-row zero source. The reported `output_zero_count` therefore equals
+  `zero_infector_count` plus these rows.
+
+**Target comparator (probability mode):** the quantity compared against `target_probability` is
+`raw_mean_probability`, the across-replicate mean of each replicate's within-replicate percentile
+of per-simulation probabilities (default percentile `0.96`, same Type 7 linear convention as
+ECAi mode, §12). There is no ceiling, no rounding, and no 5 L/s/person grid in this comparison.
+The comparator is eligible only for an unmodified published-category run (`comparator_eligible =
+!custom_scenario`); any of `--target-probability`, `--duration-hours`, `--percentile`,
+`--community-rate`, `--occupants`, `--volume-m3`, `--mask-efficiency`, or `--input-ecai` makes the
+run custom and suppresses it. `comparator_ratio = mean / target` (target is always in `(0, 1)`,
+so never a division by zero); status is `AT_TARGET_WITHIN_10PCT` for `0.9 <= ratio <= 1.1`
+(closed, evaluated with a few ULPs of rounding tolerance at the boundary), `BELOW_TARGET` for a
+smaller ratio, `ABOVE_TARGET` for a larger one. This 10% band is a self-consistency tolerance
+against the C++2 sample, not a standard's acceptance criterion, and the comparator does not
+validate either implementation (§10 of `VALIDATION.md` and the caveats below).
+
+**Zero-infector fraction and the percentile boundary:** zero-infector rows enter each replicate's
+percentile as `P = +0.0`, exactly as ECAi mode's zero-infector rows enter it as `0`. When a
+replicate's zero-infector fraction is at or above the requested percentile, that replicate's
+percentile is exactly `0`; a mean of `0` across replicates yields `BELOW_TARGET`, which is the
+correct reading of the sample, not a defect. Categories with a large zero-infector mass (Patient
+room, per the bounded ECAi-mode run in `VALIDATION.md`) are the most sensitive to this boundary.
+Probability mode has no negative-clamping step, so its zero-output fraction for a given sample is
+not directly comparable to ECAi mode's zero-output fraction for the same category.
+
+**Seed and sampling preservation:** mode and the resolved input ECAi are deliberately **not**
+fingerprint fields (see `SEED_POLICY.md`). For identical `(category, overrides, N, R, percentile,
+confidence, target, duration, base seed)`, ECAi mode and probability mode derive identical stream
+seeds, identical infector counts, identical parameter banks, and identical consumption order —
+only the deterministic per-row equation differs. This is intentional: it is what lets a
+probability-mode run and an ECAi-mode run at the same settings be compared row-for-row.
+
+**Scientific caveats specific to probability mode** (in addition to every caveat this document
+already records for ECAi mode, §9–§11, all of which probability mode inherits unchanged, since it
+reuses the same sampling architecture, distributions, and person-specific-PBR deviation D4):
+
+- The reported quantity is the `p`-th percentile (0.96 by default) of per-simulation infection
+  probability at a fixed input ECAi, evaluated over the effective duration `D`. It is not `1 - p`
+  of anything, and it is not the probability that ASHRAE 241's target is met in general.
+- Comparing the mean replicate percentile with `target_probability` is a self-consistency
+  diagnostic of the C++2 sample at the published ECAi, not independent validation: Table 4 values
+  are themselves ceilinged to multiples of 5 and were produced by an unpublished sampling matrix
+  (§8 below), so agreement or disagreement with the frozen default target `0.001` does not
+  validate or invalidate either implementation.
+- `P == 1.0` is numerical saturation of `-expm1(-Q)` in double precision, not a statement that
+  infection is certain; it is reachable only at very small input ECAi or extreme sampled
+  emission.
+- Duration `D` enters `Q` linearly; the frozen default target is labelled hourly only when the
+  effective duration is exactly 1 h, exactly as in ECAi mode.
+- `--occupants` overrides rescale total ECA (the per-person input ECAi times the effective `I0`)
+  and, like every other scientific override, suppress the comparator.
+
 ---
 
 ## 4. Design parameters (verbatim summary, §2, pp. 6–8)
@@ -801,6 +898,12 @@ documented numerical evidence and independent approval.
   individual ECAi variation.
 - **RNG/seeds/resources/tolerances:** frozen per §11.2–11.5 above; all explicitly C++2-specific
   engineering decisions, not attributable to Jones et al.
+- **Probability mode (`--mode probability`, §3.1):** a C++2-specific forward evaluation of Eq. 1
+  at a fixed input ECAi (published Table 4 value by default, or an explicit `--input-ecai`),
+  reporting the configurable within-replicate percentile (default `0.96`) of per-simulation
+  infection probability. Reuses the same seeds, banks and person-specific sampling as ECAi mode;
+  see `SEED_POLICY.md` for the fingerprint implications and `CLI_REFERENCE.md` for the flags and
+  output schema.
 - **Adjudicated items:** D2 uses the publication value `PBR_GM = 0.51 m³/h` for Dwelling unit;
   D7 uses full publication category names as canonical identifiers with strict normalized input
   matching and unconditionally accepts exactly the ten explicit legacy aliases listed in D7.

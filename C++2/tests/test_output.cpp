@@ -109,6 +109,42 @@ ReplicateBatch constant_batch(ReplicateBatch batch, double value, double confide
     return batch;
 }
 
+// Probability-mode analogue of constant_batch(): every row in every replicate
+// becomes an active row (exactly one infector) whose probability is `value`,
+// so the batch remains internally consistent under build_document's Stage 6
+// counter/bank reconciliation (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+// section 5.1). Used only to exercise the comparator/saturation boundaries at
+// a chosen mean, not to model a realistic sample.
+ReplicateBatch constant_probability_batch(ReplicateBatch batch, double value, double confidence) {
+    for (std::size_t i = 0; i < batch.replicates.size(); ++i) {
+        auto& r = batch.replicates[i];
+        r.replicate_index = i;
+        r.infector_counts.assign(r.probability.size(), 1);
+        std::fill(r.probability.begin(), r.probability.end(), value);
+        r.percentile_probability = value;
+        auto& c = r.counters;
+        c.zero_infector_count = 0;
+        c.active_count = c.n;
+        c.k_total = c.n;
+        c.saturated_count = value == 1.0 ? c.n : 0;
+        c.output_zero_count = value == 0.0 ? c.n : 0;
+        c.qer_evaluations = c.k_total;
+        c.probability_evaluations = c.active_count;
+        c.susceptible_values_consumed = 3 * c.active_count;
+        c.infector_values_consumed = 8 * c.k_total;
+        for (std::size_t bank = 0; bank < 11; ++bank) {
+            const std::size_t length = bank < 3 ? c.active_count : c.k_total;
+            r.planned_bank_lengths[bank] = length;
+            r.final_cursors[bank] = length;
+            r.bank_generated[bank] = length > 0;
+        }
+        r.cursors_exhausted = true;
+    }
+    std::vector<double> raw(batch.replicates.size(), value);
+    batch.summary = ecai_cpp2::statistics::summarize_replicates(raw, confidence);
+    return batch;
+}
+
 int main() {
     using namespace ecai_cpp2;
     using output::OutputDocument;
@@ -580,6 +616,215 @@ int main() {
     for (const auto& entry : fs::directory_iterator(success_dir))
         if (entry.path().filename().string().find(".tmp-") != std::string::npos) success_temp_left = true;
     check(!success_temp_left, "successful writer leaves no temporary directory");
+
+    // --- Probability mode (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 5) ---
+    const cli::CliOptions prob_options = cli::parse_cli(
+        {"--category", "Exam room", "--simulations", "6", "--replicates", "2", "--mode",
+         "probability"});
+    const cli::ResolvedRun prob_run = cli::resolve_run(prob_options);
+    const ReplicateBatch prob_batch = simulation::run_replicates(
+        prob_run.base_seed, prob_run.config, *prob_run.category, prob_run.overrides);
+    const OutputDocument prob_document = output::build_document(prob_run, prob_batch, prob_options);
+    check(prob_document.summary_columns.size() == 96 && prob_document.summary_rows.size() == 1 &&
+              prob_document.summary_rows[0].size() == 96,
+          "probability summary schema is frozen at exactly 96 ordered columns and one row");
+    check(prob_document.replicate_columns.size() == 20 && prob_document.replicate_rows.size() == 2 &&
+              prob_document.replicate_rows[0].size() == 20,
+          "probability replicate schema is frozen at exactly 20 ordered columns and R rows");
+    const auto prob_names = named_row(prob_document);
+    check(prob_names.at("schema_version") == "stage13-prob-v1" &&
+              prob_names.at("mode") == "probability",
+          "probability document carries the probability schema version and mode marker");
+    check(prob_names.at("comparator_eligible") == "true" &&
+              (prob_names.at("comparator_status") == "AT_TARGET_WITHIN_10PCT" ||
+               prob_names.at("comparator_status") == "BELOW_TARGET" ||
+               prob_names.at("comparator_status") == "ABOVE_TARGET"),
+          "an uncustomized probability run reports an eligible comparator with a valid status");
+    check(!prob_names.at("raw_mean_probability").empty() &&
+              std::stod(prob_names.at("raw_min_probability")) >= 0.0 &&
+              std::stod(prob_names.at("raw_max_probability")) <= 1.0,
+          "probability raw statistics are bounded to the closed unit interval");
+    check(prob_names.at("input_ecai_source") == "published_table4" &&
+              prob_names.at("input_ecai_l_s_person") ==
+                  round_trip_text(prob_run.category->published_ecai_Lsp),
+          "an unoverridden probability run resolves the published Table 4 ECAi as its input");
+
+    const auto prob_parsed_summary = parse_csv(output::serialize_summary_csv(prob_document));
+    const auto prob_parsed_replicates = parse_csv(output::serialize_replicates_csv(prob_document));
+    check(prob_parsed_summary.size() == 2 && prob_parsed_summary[0].size() == 96 &&
+              prob_parsed_summary[1].size() == 96,
+          "serialized probability summary retains exact header and row widths");
+    check(prob_parsed_replicates.size() == 3 && prob_parsed_replicates[0].size() == 20 &&
+              prob_parsed_replicates[1].size() == 20 && prob_parsed_replicates[2].size() == 20,
+          "serialized probability replicate CSV contains exactly one header and R fixed-width rows");
+
+    {
+        const cli::CliOptions custom_prob_options = cli::parse_cli(
+            {"--category", "Exam room", "--simulations", "4", "--replicates", "2", "--mode",
+             "probability", "--input-ecai", "40"});
+        const cli::ResolvedRun custom_prob_run = cli::resolve_run(custom_prob_options);
+        const ReplicateBatch custom_prob_batch = simulation::run_replicates(
+            custom_prob_run.base_seed, custom_prob_run.config, *custom_prob_run.category,
+            custom_prob_run.overrides);
+        const auto custom_prob_names = named_row(
+            output::build_document(custom_prob_run, custom_prob_batch, custom_prob_options));
+        check(custom_prob_names.at("input_ecai_source") == "explicit" &&
+                  custom_prob_names.at("input_ecai_l_s_person") == round_trip_text(40.0) &&
+                  custom_prob_names.at("comparator_eligible") == "false" &&
+                  custom_prob_names.at("comparator_status") == "NOT_APPLICABLE_CUSTOM" &&
+                  custom_prob_names.at("comparator_target_probability").empty(),
+              "explicit --input-ecai marks the run custom and suppresses the comparator");
+    }
+    {
+        ReplicateBatch tampered = prob_batch;
+        tampered.replicates[0].mode = simulation::OutputMode::ecai;
+        check(rejects([&] { (void)output::build_document(prob_run, tampered, prob_options); }),
+              "build_probability_document rejects a replicate that did not resolve to probability mode");
+    }
+    {
+        const cli::CliOptions ecai_options = cli::parse_cli(
+            {"--category", "Exam room", "--simulations", "4", "--replicates", "2"});
+        const cli::ResolvedRun ecai_run = cli::resolve_run(ecai_options);
+        ReplicateBatch tampered = simulation::run_replicates(
+            ecai_run.base_seed, ecai_run.config, *ecai_run.category, ecai_run.overrides);
+        tampered.replicates[0].mode = simulation::OutputMode::probability;
+        check(rejects([&] { (void)output::build_document(ecai_run, tampered, ecai_options); }),
+              "ECAi document construction rejects a replicate that resolved to probability mode");
+    }
+    {
+        ReplicateBatch bad = prob_batch;
+        auto& counts = bad.replicates[0].infector_counts;
+        const auto zero_it = std::find(counts.begin(), counts.end(), 0LL);
+        check(zero_it != counts.end(), "probability fixture has a zero-infector row");
+        const std::size_t zero_row = static_cast<std::size_t>(std::distance(counts.begin(), zero_it));
+        bad.replicates[0].probability[zero_row] = -0.0;
+        check(rejects([&] { (void)output::build_document(prob_run, bad, prob_options); }),
+              "probability document rejects a non-canonical zero-infector output");
+    }
+    {
+        ReplicateBatch bad = prob_batch;
+        auto& counts = bad.replicates[0].infector_counts;
+        const auto active_it = std::find_if(counts.begin(), counts.end(),
+                                            [](long long c) { return c > 0; });
+        check(active_it != counts.end(), "probability fixture has an active row");
+        const std::size_t active_row =
+            static_cast<std::size_t>(std::distance(counts.begin(), active_it));
+        bad.replicates[0].probability[active_row] = 2.0;
+        check(rejects([&] { (void)output::build_document(prob_run, bad, prob_options); }),
+              "probability document rejects a probability above 1");
+    }
+    {
+        ReplicateBatch bad = prob_batch;
+        ++bad.replicates[0].counters.saturated_count;
+        check(rejects([&] { (void)output::build_document(prob_run, bad, prob_options); }),
+              "probability document rejects a tampered saturated_count counter");
+    }
+
+    const fs::path prob_dir = root / "probability-success";
+    const auto prob_write_options = cli::parse_cli(
+        {"--category", "Exam room", "--simulations", "6", "--replicates", "2", "--mode",
+         "probability", "--summary-file", (prob_dir / "summary.csv").string(), "--replicates-file",
+         (prob_dir / "replicates.csv").string(), "--write-replicates"});
+    const output::WriteResult prob_written = output::write_outputs(prob_write_options, prob_document);
+    const auto prob_disk_summary = parse_csv(read_text(prob_dir / "summary.csv"));
+    const auto prob_disk_replicates = parse_csv(read_text(prob_dir / "replicates.csv"));
+    check(prob_written.cleanup_complete && prob_disk_summary.size() == 2 &&
+              prob_disk_summary[0].size() == 96 && prob_disk_summary[1].size() == 96 &&
+              prob_disk_replicates.size() == 3 && prob_disk_replicates[0].size() == 20,
+          "probability writer returns cleanup complete and exact 96/20 headers with one/R rows on disk");
+
+    // --- Probability mode: aggregate counter invariants on a real batch -----
+    check(prob_names.at("all_replicates_active_count") ==
+                  std::to_string(std::stoull(prob_names.at("all_replicates_n")) -
+                                  std::stoull(prob_names.at("all_replicates_zero_infector_count"))),
+          "probability aggregate active + zero-infector counts partition all_replicates_n");
+    check(std::stoull(prob_names.at("all_replicates_output_zero_count")) >=
+              std::stoull(prob_names.at("all_replicates_zero_infector_count")),
+          "probability aggregate output-zero count is at least the zero-infector count");
+    check(std::stoull(prob_names.at("all_replicates_saturated_count")) <=
+              std::stoull(prob_names.at("all_replicates_active_count")),
+          "probability aggregate saturated count never exceeds the active count");
+    check(std::stoull(prob_names.at("all_replicates_qer_evaluations")) ==
+              std::stoull(prob_names.at("all_replicates_k_total")),
+          "probability aggregate QER evaluations equal K_total");
+    check(std::stoull(prob_names.at("all_replicates_probability_evaluations")) ==
+              std::stoull(prob_names.at("all_replicates_active_count")),
+          "probability aggregate evaluation count equals the active count");
+    check(prob_names.at("counters_reconcile") == "true" &&
+              prob_names.at("all_cursors_exhausted") == "true" &&
+              prob_names.at("all_replicates_finite") == "true" &&
+              prob_names.at("banks_reconcile") == "true",
+          "probability document reports every counter/cursor/finiteness/bank invariant as true");
+    check(prob_names.at("probability_policy") == "forward_wells_riley_expm1" &&
+              prob_names.at("saturation_policy") == "probability_one_is_numerical_saturation" &&
+              prob_names.at("zero_infector_policy") == "zero_infector_short_circuit",
+          "probability document reports the frozen policy literals");
+
+    // --- Probability mode: arbitrary --percentile ----------------------------
+    {
+        const cli::CliOptions pct_options = cli::parse_cli(
+            {"--category", "Exam room", "--simulations", "6", "--replicates", "2", "--mode",
+             "probability", "--percentile", "0.5"});
+        const cli::ResolvedRun pct_run = cli::resolve_run(pct_options);
+        const ReplicateBatch pct_batch = simulation::run_replicates(
+            pct_run.base_seed, pct_run.config, *pct_run.category, pct_run.overrides);
+        const OutputDocument pct_document = output::build_document(pct_run, pct_batch, pct_options);
+        const auto pct_names = named_row(pct_document);
+        check(pct_names.at("percentile") == round_trip_text(0.5),
+              "an arbitrary --percentile is reported exactly in the probability summary");
+        for (const auto& row : pct_document.replicate_rows) {
+            const std::size_t column = std::distance(
+                pct_document.replicate_columns.begin(),
+                std::find(pct_document.replicate_columns.begin(),
+                          pct_document.replicate_columns.end(), "requested_percentile"));
+            check(row[column] == round_trip_text(0.5),
+                  "every probability replicate row echoes the arbitrary requested percentile");
+        }
+    }
+
+    // --- Probability mode: comparator boundary classification ---------------
+    // Means chosen exactly per docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+    // section 9.3 T9 against the default target_probability = 0.001: 0.9 and
+    // 1.1 are the inclusive AT_TARGET_WITHIN_10PCT ratio boundaries.
+    for (const auto& expected : std::vector<std::pair<double, std::string>>{
+             {0.0009, "AT_TARGET_WITHIN_10PCT"}, {0.0011, "AT_TARGET_WITHIN_10PCT"},
+             {0.00089, "BELOW_TARGET"}, {0.00111, "ABOVE_TARGET"}, {0.0, "BELOW_TARGET"}}) {
+        const ReplicateBatch boundary_batch =
+            constant_probability_batch(prob_batch, expected.first, prob_options.confidence_level);
+        const auto boundary = named_row(output::build_document(prob_run, boundary_batch, prob_options));
+        const double target = std::stod(boundary.at("target_probability"));
+        const double ratio = expected.first / target;
+        check(boundary.at("comparator_eligible") == "true" &&
+                  boundary.at("comparator_status") == expected.second &&
+                  boundary.at("comparator_ratio") == round_trip_text(ratio),
+              "probability comparator classifies mean " + round_trip_text(expected.first) +
+                  " as " + expected.second);
+    }
+
+    // --- Probability mode: saturation counters flow into aggregate totals ---
+    {
+        const ReplicateBatch saturated_batch =
+            constant_probability_batch(prob_batch, 1.0, prob_options.confidence_level);
+        const auto saturated_names =
+            named_row(output::build_document(prob_run, saturated_batch, prob_options));
+        check(saturated_names.at("all_replicates_saturated_count") ==
+                  saturated_names.at("all_replicates_active_count") &&
+                  saturated_names.at("all_replicates_active_count") ==
+                      saturated_names.at("all_replicates_n") &&
+                  std::stod(saturated_names.at("raw_max_probability")) == 1.0,
+              "a fully saturated batch reports saturated_count equal to every active row");
+        for (const auto& row : output::build_document(prob_run, saturated_batch, prob_options)
+                                    .replicate_rows) {
+            const auto& columns =
+                output::build_document(prob_run, saturated_batch, prob_options).replicate_columns;
+            const std::size_t saturated_column = std::distance(
+                columns.begin(), std::find(columns.begin(), columns.end(), "saturated_count"));
+            const std::size_t active_column = std::distance(
+                columns.begin(), std::find(columns.begin(), columns.end(), "active_count"));
+            check(row[saturated_column] == row[active_column],
+                  "each fully saturated replicate row reports saturated_count == active_count");
+        }
+    }
 
     fs::remove_all(root, ec);
     if (failures) {

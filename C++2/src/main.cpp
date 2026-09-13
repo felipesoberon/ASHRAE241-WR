@@ -5,9 +5,11 @@
 // lives in include/cli.h; every statistic lives in Stage 11. Stage 13 output
 // composition and writing are delegated to output.cpp after the single run.
 
+#include <algorithm>
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -56,11 +58,31 @@ int main(int argc, char** argv) {
         const ecai_cpp2::output::WriteResult written =
             ecai_cpp2::output::write_outputs(options, document,
                                              ECAI_CPP2_PROTECTED_LEGACY_TREE);
-        std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
-                  << "console_summary (not a CSV file) category=\""
-                  << run.config.category_name
-                  << "\" raw_mean_l_s_person=" << batch.summary.mean_l_s_person
-                  << " ceiling_to_5_l_s_person=" << batch.summary.adjusted_ceiling_to_5_l_s_person;
+        std::cout << std::setprecision(std::numeric_limits<double>::max_digits10);
+        if (run.scenario.mode == ecai_cpp2::simulation::OutputMode::probability) {
+            // The probability-mode fields are pulled from the already-validated
+            // document rather than recomputed here, so main.cpp stays a thin
+            // presenter of Stage 13 output (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
+            // section 4.5).
+            const auto field = [&](const char* name) -> const std::string& {
+                const auto it = std::find(document.summary_columns.begin(),
+                                          document.summary_columns.end(), std::string(name));
+                const auto column = static_cast<std::size_t>(
+                    std::distance(document.summary_columns.begin(), it));
+                return document.summary_rows.at(0).at(column);
+            };
+            std::cout << "console_summary (not a CSV file) mode=probability category=\""
+                      << run.config.category_name << "\" input_ecai_l_s_person="
+                      << field("input_ecai_l_s_person") << " percentile=" << field("percentile")
+                      << " raw_mean_probability=" << field("raw_mean_probability")
+                      << " target_probability=" << field("target_probability")
+                      << " comparator_status=" << field("comparator_status");
+        } else {
+            std::cout << "console_summary (not a CSV file) category=\""
+                      << run.config.category_name
+                      << "\" raw_mean_l_s_person=" << batch.summary.mean_l_s_person
+                      << " ceiling_to_5_l_s_person=" << batch.summary.adjusted_ceiling_to_5_l_s_person;
+        }
         if (written.paths.summary_requested) std::cout << " summary_file=\"" << written.paths.summary_path << "\"";
         if (written.paths.replicates_requested) std::cout << " replicates_file=\"" << written.paths.replicates_path << "\"";
         std::cout << "\n";

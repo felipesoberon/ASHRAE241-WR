@@ -201,6 +201,14 @@ void validate_domains(const CliOptions& options) {
         (!(*options.mask_efficiency >= 0.0) || !(*options.mask_efficiency <= 1.0))) {
         reject("flag --mask-efficiency requires 0 <= FRACTION <= 1");
     }
+    if (options.input_ecai_l_s_person) {
+        if (!(*options.input_ecai_l_s_person >= 0.0)) {
+            reject("flag --input-ecai requires a finite value >= 0");
+        }
+        if (options.mode != simulation::OutputMode::probability) {
+            reject("flag --input-ecai requires --mode probability");
+        }
+    }
 }
 
 // Require non-explicit scalar values to retain their parser defaults. This
@@ -229,6 +237,9 @@ void validate_scalar_provenance(const CliOptions& options) {
     if (!options.base_seed_explicit && options.base_seed != kDefaultBaseSeed) {
         reject("base seed differs from its unoverridden default");
     }
+    if (!options.mode_explicit && options.mode != kDefaultMode) {
+        reject("output mode differs from its unoverridden default");
+    }
 }
 
 }  // namespace
@@ -239,6 +250,7 @@ const std::vector<std::string>& accepted_flags() {
         "--percentile",     "--confidence",        "--target-probability",
         "--duration-hours", "--base-seed",         "--community-rate",
         "--occupants",      "--volume-m3",         "--mask-efficiency",
+        "--mode",           "--input-ecai",
         "--output-directory", "--summary-file",    "--replicates-file",
         "--write-replicates", "--help"};
     return flags;
@@ -292,6 +304,18 @@ std::string help_text() {
         "                              Default: the selected category value.\n"
         "  --mask-efficiency FRACTION  Mask efficiency, 0 <= FRACTION <= 1.\n"
         "                              Default: the selected category value.\n"
+        "\n"
+        "Output mode (--mode never marks the run a custom scenario by itself):\n"
+        "  --mode MODE                 \"ecai\" (default) or \"probability\", case sensitive,\n"
+        "                              no aliases. ecai mode inverts for the ECAi that\n"
+        "                              reproduces --target-probability, exactly as before.\n"
+        "                              probability mode instead evaluates the forward\n"
+        "                              infection probability at a fixed input ECAi.\n"
+        "  --input-ecai ECAI           Fixed input ECAi for probability mode, in\n"
+        "                              L/s/person, finite and >= 0. Requires\n"
+        "                              --mode probability; an explicit value marks the\n"
+        "                              run a custom scenario. Default: the selected\n"
+        "                              category's published Table 4 ECAi.\n"
         "\n"
         "Output controls (Stage 12 parses and records these only; no directory or file\n"
         "is created, opened, written or checked until Stage 13):\n"
@@ -386,6 +410,18 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
             options.volume_m3 = parse_double_strict(value, arg);
         } else if (arg == "--mask-efficiency") {
             options.mask_efficiency = parse_double_strict(value, arg);
+        } else if (arg == "--mode") {
+            if (value == "ecai") {
+                options.mode = simulation::OutputMode::ecai;
+            } else if (value == "probability") {
+                options.mode = simulation::OutputMode::probability;
+            } else {
+                reject("flag --mode expects \"ecai\" or \"probability\", but got \"" + value +
+                       "\"");
+            }
+            options.mode_explicit = true;
+        } else if (arg == "--input-ecai") {
+            options.input_ecai_l_s_person = parse_double_strict(value, arg);
         } else if (arg == "--output-directory") {
             options.output_directory = require_identifier(value, arg);
         } else if (arg == "--summary-file") {
@@ -405,7 +441,8 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
                                options.percentile_explicit ||
                                options.community_infection_rate.has_value() ||
                                options.occupants.has_value() || options.volume_m3.has_value() ||
-                               options.mask_efficiency.has_value();
+                               options.mask_efficiency.has_value() ||
+                               options.input_ecai_l_s_person.has_value();
     options.target_is_hourly = (options.duration_hours == 1.0);
     validate_domains(options);
     return options;
@@ -428,7 +465,7 @@ ResolvedRun resolve_run(const CliOptions& options) {
         options.target_probability_explicit || options.duration_explicit ||
         options.percentile_explicit || options.community_infection_rate.has_value() ||
         options.occupants.has_value() || options.volume_m3.has_value() ||
-        options.mask_efficiency.has_value();
+        options.mask_efficiency.has_value() || options.input_ecai_l_s_person.has_value();
     if (expected_custom != options.custom_scenario) {
         reject("custom-scenario provenance disagrees with the supplied scientific overrides");
     }
@@ -455,6 +492,8 @@ ResolvedRun resolve_run(const CliOptions& options) {
     run.overrides.volume_m3 = options.volume_m3;
     run.overrides.mask_efficiency = options.mask_efficiency;
     run.overrides.community_infection_rate = options.community_infection_rate;
+    run.overrides.mode = options.mode;
+    run.overrides.input_ecai_l_s_person = options.input_ecai_l_s_person;
 
     run.config.category_name = run.category->canonical_name;
     run.config.i0 = options.occupants ? *options.occupants
