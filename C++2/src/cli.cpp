@@ -209,6 +209,17 @@ void validate_domains(const CliOptions& options) {
             reject("flag --input-ecai requires --mode probability");
         }
     }
+    // Risk-averse infector policy (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md
+    // Phase 3): reject an explicit --community-rate <= 0 combined with
+    // --infector-policy risk-averse as early as possible, without a category
+    // lookup. An unsupplied --community-rate still resolves to the category
+    // default, which is checked authoritatively later in
+    // simulation::resolve_scenario (validate_scenario), once that default is
+    // known; this early check only ever catches an explicit conflict.
+    if (options.infector_policy == simulation::InfectorPolicy::risk_averse &&
+        options.community_infection_rate && !(*options.community_infection_rate > 0.0)) {
+        reject("flag --infector-policy risk-averse requires --community-rate > 0");
+    }
 }
 
 // Require non-explicit scalar values to retain their parser defaults. This
@@ -240,6 +251,10 @@ void validate_scalar_provenance(const CliOptions& options) {
     if (!options.mode_explicit && options.mode != kDefaultMode) {
         reject("output mode differs from its unoverridden default");
     }
+    if (!options.infector_policy_explicit &&
+        options.infector_policy != simulation::InfectorPolicy::community) {
+        reject("infector policy differs from its unoverridden default");
+    }
 }
 
 }  // namespace
@@ -250,7 +265,7 @@ const std::vector<std::string>& accepted_flags() {
         "--percentile",     "--confidence",        "--target-probability",
         "--duration-hours", "--base-seed",         "--community-rate",
         "--occupants",      "--volume-m3",         "--mask-efficiency",
-        "--mode",           "--input-ecai",
+        "--mode",           "--input-ecai",        "--infector-policy",
         "--output-directory", "--summary-file",    "--replicates-file",
         "--write-replicates", "--help"};
     return flags;
@@ -316,6 +331,17 @@ std::string help_text() {
         "                              --mode probability; an explicit value marks the\n"
         "                              run a custom scenario. Default: the selected\n"
         "                              category's published Table 4 ECAi.\n"
+        "\n"
+        "Infector policy (--infector-policy never marks the run a custom scenario by\n"
+        "itself, and applies identically to both output modes above):\n"
+        "  --infector-policy POLICY    \"community\" (default) or \"risk-averse\", case\n"
+        "                              sensitive, no aliases. community retains the\n"
+        "                              unconditional per-simulation binomial infector\n"
+        "                              count, including zero-infector rows. risk-averse\n"
+        "                              conditions every simulation on at least one\n"
+        "                              infector and requires a strictly positive\n"
+        "                              effective community rate (I0 >= 1 is already\n"
+        "                              required in both policies).\n"
         "\n"
         "Output controls (Stage 12 parses and records these only; no directory or file\n"
         "is created, opened, written or checked until Stage 13):\n"
@@ -422,6 +448,16 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
             options.mode_explicit = true;
         } else if (arg == "--input-ecai") {
             options.input_ecai_l_s_person = parse_double_strict(value, arg);
+        } else if (arg == "--infector-policy") {
+            if (value == "community") {
+                options.infector_policy = simulation::InfectorPolicy::community;
+            } else if (value == "risk-averse") {
+                options.infector_policy = simulation::InfectorPolicy::risk_averse;
+            } else {
+                reject("flag --infector-policy expects \"community\" or \"risk-averse\", but got \"" +
+                       value + "\"");
+            }
+            options.infector_policy_explicit = true;
         } else if (arg == "--output-directory") {
             options.output_directory = require_identifier(value, arg);
         } else if (arg == "--summary-file") {
@@ -494,6 +530,8 @@ ResolvedRun resolve_run(const CliOptions& options) {
     run.overrides.community_infection_rate = options.community_infection_rate;
     run.overrides.mode = options.mode;
     run.overrides.input_ecai_l_s_person = options.input_ecai_l_s_person;
+    run.overrides.infector_policy = options.infector_policy;
+    run.overrides.infector_policy_explicit = options.infector_policy_explicit;
 
     run.config.category_name = run.category->canonical_name;
     run.config.i0 = options.occupants ? *options.occupants

@@ -63,11 +63,65 @@ struct CountSummary {
 // std::size_t.
 CountSummary summarize_counts(const std::vector<long long>& counts);
 
+// Infector-handling policy for one Stage 6 plan
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md). Defined independently here
+// rather than reused from simulation.h, which includes this header (a
+// reverse include would be circular). The enumerator values are frozen to
+// agree with simulation::InfectorPolicy exactly, so a caller may convert
+// between the two with a plain static_cast rather than a lookup table.
+// `community` is enumerator 0, so a value-initialized SamplingPlan defaults
+// to the unchanged current binomial behavior without any explicit
+// initialization.
+enum class InfectorPolicy { community = 0, risk_averse = 1 };
+static_assert(static_cast<int>(InfectorPolicy::community) == 0,
+              "InfectorPolicy::community must be enumerator 0 so value-initialization defaults "
+              "to it");
+
+// Version tag for the conditional-PPF algorithm/table formulation used to
+// realize a risk-averse plan's counts: distributions::BinomialPpfTable's
+// retained conditional-tail cumulative-mass table
+// (conditional_ppf_at_least_one), not a redraw-until-positive or affine
+// endpoint construction. Recorded verbatim in InfectorPolicyProvenance so a
+// later reader can tell which algorithm produced a stored zero_mass/cutoff
+// without re-deriving it from the code.
+inline constexpr const char* kConditionalPpfAlgorithmVersion = "conditional-tail-v1";
+
+// Risk-averse-specific numerical provenance for one Stage 6 plan
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 4, section 8's
+// auditability requirement). Meaningful only when the owning SamplingPlan's
+// `policy` is risk_averse; every field stays at its default for a community
+// plan, matching InfectorPolicy::community's own zero-valued default.
+struct InfectorPolicyProvenance {
+    InfectorPolicy policy = InfectorPolicy::community;
+    // distributions::BinomialPpfTable::zero_mass() for this plan's (I0, p)
+    // -- the conditional-inversion cutoff -- captured before any LHS value
+    // is consumed. Stays 0.0 (unused) for a community plan.
+    double zero_mass = 0.0;
+    // True iff zero_mass rounded to exactly 0.0 in binary64 (the p = 1
+    // deterministic branch, or an underflowed pmf[0] at p < 1).
+    bool zero_mass_rounded_to_zero = false;
+    // True iff zero_mass rounded to exactly 1.0 in binary64 for a
+    // representable positive p, triggering conditional_ppf_at_least_one's
+    // explicit limiting branch (returns 1 for every u) rather than an
+    // unresolvable-tail table lookup.
+    bool zero_mass_rounded_to_one = false;
+    // kConditionalPpfAlgorithmVersion, recorded only for a risk-averse plan;
+    // empty for a community plan.
+    std::string conditional_ppf_algorithm_version;
+    // True iff every count in this plan was produced by a deterministic or
+    // limiting branch of conditional_ppf_at_least_one rather than an
+    // ordinary conditional-tail table lookup: p == 1 (point mass at I0) or
+    // zero_mass rounding to exactly 1.0. Always false for a community plan.
+    bool deterministic_branch_used = false;
+};
+
 // The full Stage 6 sampling plan for one (configuration, replicate) pair:
 // exactly `n` infector counts, in simulation order, plus their accounting.
 struct SamplingPlan {
     // counts[i] is simulation i's infector count (ninf), in the same order
-    // as the underlying LHS list; simulation order is preserved.
+    // as the underlying LHS list; simulation order is preserved. Every
+    // count is in [0, I0] under InfectorPolicy::community and in [1, I0]
+    // under InfectorPolicy::risk_averse.
     std::vector<long long> counts;
     std::size_t n = 0;
     std::size_t n_zero = 0;
@@ -75,40 +129,113 @@ struct SamplingPlan {
     std::size_t k_total = 0;
     std::size_t susceptible_draws = 0;  // == n_active
     std::size_t infector_draws = 0;     // == k_total
+
+    // The infector policy this plan was built under (docs/RISK_AVERSE_
+    // IMPLEMENTATION_PLAN.md Phase 4). `community` (enumerator 0) is the
+    // default, so a value-initialized SamplingPlan is a community plan.
+    InfectorPolicy policy = InfectorPolicy::community;
+    // Risk-averse numerical provenance; left at its all-default value for a
+    // community plan.
+    InfectorPolicyProvenance infector_provenance;
+
+    // Explicit count-stream invariants, tracked independently of
+    // counts.size(): the number of count-stream uniforms actually generated
+    // by the single StreamId::infector_count / list_length = n LHS call,
+    // and the number actually consumed to produce `counts`. Both equal `n`
+    // exactly for every policy -- there is no retry/rejection loop that
+    // could generate or consume a variable number of count-stream uniforms
+    // -- and are tracked separately from parameter-bank/QER consumption
+    // counters (susceptible_draws/infector_draws) below.
+    std::size_t lhs_generated = 0;
+    std::size_t lhs_consumed = 0;
 };
 
 // Generates exactly `n` open-unit 1D LHS values (seeded from
-// seeds.derive_seed(config, replicate_index, StreamId::infector_count, n)),
-// transforms each through one per-call distributions::BinomialPpfTable(i0,
-// p) -- whose ppf(u) equals distributions::binomial_ppf(u, i0, p) exactly,
-// with the constant (i0, p) PMF/CDF built once rather than once per u -- to
-// obtain one infector count per simulation, and returns the resulting plan.
+// seeds.derive_seed(config, replicate_index, StreamId::infector_count, n)
+// -- the same seed regardless of `infector_policy`, so the count-stream is
+// matched across policies), transforms each through one per-call
+// distributions::BinomialPpfTable(i0, p) to obtain one infector count per
+// simulation, and returns the resulting plan.
+//
+// Under the default InfectorPolicy::community, each u is transformed by
+// table.ppf(u) -- equal to distributions::binomial_ppf(u, i0, p) exactly,
+// with the constant (i0, p) PMF/CDF built once rather than once per u --
+// preserving the current community behavior, including zero-infector rows,
+// exactly and unconditionally.
+//
+// Under InfectorPolicy::risk_averse, each u is instead transformed by
+// table.conditional_ppf_at_least_one(u), producing exactly `n` counts each
+// in [1, i0] with no zero-infector row and no redraw/rejection loop --
+// exactly `n` count-stream uniforms are generated and exactly `n` are
+// consumed, identically to the community case. Because the seed and LHS
+// list are unchanged by policy, a risk-averse count is never lower than the
+// community count that the same u would have produced. The plan's
+// `infector_provenance` records the cutoff (zero_mass), whether it rounded
+// to 0.0/1.0, the conditional-PPF algorithm version, and whether a
+// deterministic/limiting branch was used; these all stay at their default,
+// unused values for a community plan.
 //
 // Every check below runs, in order, before any allocation:
 //   - n == 0: std::invalid_argument.
 //   - i0 < 0: std::invalid_argument.
 //   - p nonfinite or outside [0, 1]: std::invalid_argument.
+//   - infector_policy is not a declared InfectorPolicy enumerator:
+//     std::invalid_argument.
+//   - infector_policy is risk_averse and i0 < 1, or p is not strictly
+//     positive: std::invalid_argument (the authoritative direct-call check;
+//     it applies identically whether or not a CLI/scenario layer already
+//     performed the same check).
 //   - n > policy.max_simulations: std::runtime_error.
 //   - checked n * static_cast<size_t>(i0) (K_total's maximum possible
 //     value) overflowing std::size_t, or exceeding
 //     policy.max_total_infectors: std::runtime_error.
 //   - checked peak byte cost of the n-length uniform/count vectors plus the
-//     two `(i0+1)`-double binomial buffers (PMF and CDF), overflowing
-//     std::size_t or exceeding policy.max_bytes, or n exceeding
-//     std::vector<double>::max_size() / std::vector<long long>::max_size():
-//     std::runtime_error.
-//   - checked i0 + 1 (distributions::BinomialPpfTable's PMF/CDF buffer
-//     size) overflowing std::size_t or exceeding
+//     three `(i0+1)`-double binomial buffers retained/transiently owned by
+//     distributions::BinomialPpfTable (PMF, CDF, and conditional-tail --
+//     the conditional-tail buffer is built unconditionally by the table's
+//     constructor for every policy, not only for risk_averse, so it is
+//     charged against every call), overflowing std::size_t or exceeding
+//     policy.max_bytes, or n exceeding std::vector<double>::max_size() /
+//     std::vector<long long>::max_size(): std::runtime_error.
+//   - checked i0 + 1 (distributions::BinomialPpfTable's PMF/CDF/
+//     conditional-tail buffer size) overflowing std::size_t or exceeding
 //     std::vector<double>::max_size(): std::runtime_error.
 //
-// Zero-infector simulations (counts[i] == 0) are accounted for but imply no
-// other per-simulation draw; susceptible_draws counts only active
-// simulations and infector_draws is the checked sum of every positive
-// count (see summarize_counts).
+// Zero-infector simulations (counts[i] == 0; only possible under
+// InfectorPolicy::community) are accounted for but imply no other
+// per-simulation draw; susceptible_draws counts only active simulations and
+// infector_draws is the checked sum of every positive count (see
+// summarize_counts).
 SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
                                   const seed_manager::EffectiveConfig& config,
                                   std::uint64_t replicate_index, std::size_t n, long long i0,
-                                  double p, const ResourcePolicy& policy = ResourcePolicy{});
+                                  double p, const ResourcePolicy& policy = ResourcePolicy{},
+                                  InfectorPolicy infector_policy = InfectorPolicy::community);
+
+// Validates a completed plan's policy-specific invariants before it is
+// trusted by a caller expecting `expected_policy` (docs/RISK_AVERSE_
+// IMPLEMENTATION_PLAN.md Phase 4: "policy is stored in the plan and checked
+// against the resolved scenario during plan validation and replicate
+// execution"). Runs, in order:
+//   - expected_policy or plan.policy is not a declared InfectorPolicy
+//     enumerator: std::invalid_argument.
+//   - plan.policy != expected_policy: std::invalid_argument (a tampered or
+//     mismatched scenario/plan policy pair).
+//   - plan.counts.size() != plan.n, or plan's accounting disagrees with an
+//     independent summarize_counts(plan.counts): std::invalid_argument.
+//   - compute_bank_budget(plan.n, plan.n_active, plan.k_total, policy)
+//     rejects the plan (an inconsistent accounting triple or a resource
+//     ceiling overrun): propagates its std::invalid_argument or
+//     std::runtime_error.
+//   - plan.policy == risk_averse and (plan.n_zero != 0, plan.n_active !=
+//     plan.n, plan.k_total < plan.n, or any element of plan.counts < 1):
+//     std::invalid_argument (a risk-averse plan must contain no
+//     zero-infector rows, so every simulation is active and K_total is at
+//     least N).
+// A community plan is exempt from the last group of checks: it may
+// legitimately contain zero-infector rows.
+void validate_plan_policy_context(const SamplingPlan& plan, InfectorPolicy expected_policy,
+                                   const ResourcePolicy& policy = ResourcePolicy{});
 
 
 // ===================================================================

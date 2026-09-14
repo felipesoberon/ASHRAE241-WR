@@ -358,6 +358,36 @@ double fill_binomial_pmf(long long n, double p, std::vector<double>& pmf) {
     return normalizer_sum.total();
 }
 
+// Builds the retained conditional-tail cumulative-mass table
+// T[k] = sum(pmf[1..k]) / sum(pmf[1..n]) for k = 1..n, entirely from the
+// pmf[1..n] terms -- two independent compensated passes (one to total the
+// conditional normalizer, one to accumulate the running sum divided by it),
+// never by subtracting the unconditional cdf_[k] - zero_mass, which would
+// reintroduce cancellation error whenever zero_mass is close to 1. Returned
+// sized n+1 with index 0 left at 0.0 (unused; the conditional search starts
+// at k=1). Requires n >= 1; `pmf` must be the same n+1-term array
+// fill_binomial_pmf produced. If every pmf[1..n] term underflowed to
+// exactly 0.0 -- the zero_mass-rounds-to-1 limiting case, which
+// conditional_ppf_at_least_one() detects and handles via its own explicit
+// branch before this table is ever consulted -- the table is left filled
+// with zeros rather than populated by a 0/0 division.
+std::vector<double> fill_conditional_tail(long long n, const std::vector<double>& pmf) {
+    std::vector<double> tail(static_cast<std::size_t>(n) + 1, 0.0);
+    CompensatedSum tail_total;
+    for (long long k = 1; k <= n; ++k) {
+        tail_total.add(pmf[static_cast<std::size_t>(k)]);
+    }
+    const double denominator = tail_total.total();
+    if (denominator > 0.0) {
+        CompensatedSum cumulative;
+        for (long long k = 1; k <= n; ++k) {
+            cumulative.add(pmf[static_cast<std::size_t>(k)]);
+            tail[static_cast<std::size_t>(k)] = cumulative.total() / denominator;
+        }
+    }
+    return tail;
+}
+
 }  // namespace
 
 long long binomial_ppf(double u, long long n, double p) {
@@ -407,6 +437,8 @@ BinomialPpfTable::BinomialPpfTable(long long n, double p) : n_(n), p_(p) {
         cumulative.add(pmf[k]);
         cdf_[k] = cumulative.total() / normalizer;
     }
+
+    conditional_tail_ = fill_conditional_tail(n, pmf);
 }
 
 long long BinomialPpfTable::ppf(double u) const {
@@ -426,6 +458,56 @@ long long BinomialPpfTable::ppf(double u) const {
         if (cdf_[k] >= u) return static_cast<long long>(k);
     }
     // Same documented fallback as binomial_ppf.
+    return n_;
+}
+
+double BinomialPpfTable::zero_mass() const {
+    // n = 0: X is identically 0 no matter what p is. p <= 0: every trial
+    // fails, so X is identically 0. Both are degenerate cases cdf_ was never
+    // built for (the constructor returns before allocating it).
+    if (n_ == 0 || p_ <= 0.0) return 1.0;
+    // p >= 1.0 (n >= 1 here): every trial succeeds, so X is identically n
+    // and P(X = 0) = 0. cdf_ was never built for this case either.
+    if (p_ >= 1.0) return 0.0;
+    return cdf_[0];
+}
+
+long long BinomialPpfTable::conditional_ppf_at_least_one(double u) const {
+    require(n_ >= 1,
+            "BinomialPpfTable::conditional_ppf_at_least_one: n (I0) must be at least 1");
+    require(p_ > 0.0,
+            "BinomialPpfTable::conditional_ppf_at_least_one: p must be strictly positive");
+    require(std::isfinite(u), "BinomialPpfTable::conditional_ppf_at_least_one: u must be finite");
+    require(u > 0.0 && u <= 1.0,
+            "BinomialPpfTable::conditional_ppf_at_least_one: u must be in the half-open interval "
+            "(0, 1]");
+
+    // p = 1: every trial succeeds, so the conditional distribution given
+    // X >= 1 is a point mass at n for every valid u. Short-circuits before
+    // any table access, exactly as the unconditional ppf()/zero_mass() do
+    // for this case; zero_mass() reports 0.0 here.
+    if (p_ >= 1.0) return n_;
+
+    // Explicit limiting branch: zero_mass rounded to exactly 1.0 in binary64
+    // for this representable positive p, so the conditional tail is too
+    // small relative to pmf[0] to resolve numerically (fill_conditional_tail
+    // may even have left conditional_tail_ filled with zeros). Returning 1
+    // here is a deliberate, documented decision, not an accidental result of
+    // a stray 0 >= 0 comparison against an unpopulated table.
+    if (zero_mass() >= 1.0) return 1;
+
+    // Upper support endpoint of the conditional distribution, matching the
+    // half-open (0, 1] convention ppf() uses for the unconditional case.
+    if (u >= 1.0) return n_;
+
+    // Exact linear scan over the retained conditional-tail cumulative
+    // masses: the first k whose stored T[k] is >= u.
+    for (long long k = 1; k <= n_; ++k) {
+        if (conditional_tail_[static_cast<std::size_t>(k)] >= u) return k;
+    }
+    // Same documented fallback as ppf(): rounding left the normalized
+    // conditional cumulative sum short of u even at k = n_, whose true
+    // conditional CDF is exactly 1. Bounded by the n_ terms scanned above.
     return n_;
 }
 

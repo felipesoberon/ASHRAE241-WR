@@ -130,3 +130,9 @@ The configuration fingerprint covers the canonical category name, `I0`, volume, 
 The integer seed fold, `mt19937_64` outputs, threshold-rejection bounded integers, and Fisher–Yates index permutation use standard-defined integer behavior and explicit algorithms. Bit identity for the open-unit conversion, `nextafter` corrections, binary64 stratum arithmetic, shuffled double values, transformed values, and end-to-end output requires supported IEEE-754 binary64 semantics plus the same relevant compiler, standard and mathematical libraries, target architecture, and floating-point flags. It is not guaranteed by conformance to C++17 alone.
 
 CMake disables fast-math and floating-point contraction with `-fno-fast-math -ffp-contract=off`. Across other toolchains, transformed values are assessed with the tolerances in [`MODEL_SPECIFICATION.md`](MODEL_SPECIFICATION.md#115-validation-acceptance-table), not assumed bit-identical.
+
+## Risk-averse conditional infector sampling
+
+The optional `risk-averse` infector policy samples the binomial distribution conditional on `X >= 1`. It uses the existing `infector_count` LHS stream exactly once per requested simulation and a conditional PPF in CDF space; it does not redraw zero-infector values and does not materialize an affine floating-point cutoff. The helper starts at count 1, handles `p=1` and `zero_mass==1` explicit branches, and records the zero mass and algorithm/branch provenance.
+
+The default `community` policy is unchanged and retains zero-infector rows. Risk-averse plans require `I0>=1` and `p>0`, have `n_zero=0`, `n_active=N`, and `K_total>=N`. The policy is an estimand change—conditional risk given at least one infector—not a joint LHS and not a custom category-input override.

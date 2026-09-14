@@ -365,3 +365,9 @@ ecai_cpp2 --category "Patient room" --simulations 8 --replicates 2 --occupants 2
 
 The default invocation, `--category NAME` with no other flags, runs
 10000 simulations across 500 replicates.
+
+## Risk-averse infector policy
+
+`--infector-policy community` is the default and preserves zero-infector community-mixture behavior. `--infector-policy risk-averse` conditions both ECAi and probability calculations on at least one infector, using a conditional PPF in CDF space and exactly N count-stream LHS values. It rejects `I0==0` and nonpositive community rates before output creation.
+
+Risk-averse output uses `stage13-ra-v1` for ECAi and `stage13-prob-ra-v1` for probability. These schemas record policy, zero-mass and conditional-PPF provenance, enforce zero-infector count 0 and active count N, and use `NOT_APPLICABLE_RISK_AVERSE` with population comparator fields blank. C++2 keeps community as the default in both modes; this differs from the legacy probability executable's historical require-infectors default.

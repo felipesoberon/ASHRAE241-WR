@@ -226,11 +226,11 @@ int main() {
             "--percentile",         "--confidence",      "--target-probability",
             "--duration-hours",     "--base-seed",       "--community-rate",
             "--occupants",          "--volume-m3",       "--mask-efficiency",
-            "--mode",               "--input-ecai",
+            "--mode",               "--input-ecai",      "--infector-policy",
             "--output-directory",   "--summary-file",    "--replicates-file",
             "--write-replicates",   "--help"};
         check(planned.size() == cli::accepted_flags().size(),
-              "the parser accepts exactly the 19 planned flags");
+              "the parser accepts exactly the 20 planned flags");
         for (const std::string& flag : planned) {
             bool known = false;
             for (const std::string& parser_flag : cli::accepted_flags()) {
@@ -436,6 +436,199 @@ int main() {
         const cli::CliOptions options = cli::parse_cli(args);
         check(options.input_ecai_l_s_person.has_value() && *options.input_ecai_l_s_person == 0.0,
               "--input-ecai accepts exactly 0");
+    }
+
+    // --- Infector policy: --infector-policy parsing (additive; see
+    // docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 3) -----------------------
+    {
+        const cli::CliOptions options = cli::parse_cli(bounded_args());
+        check(options.infector_policy == simulation::InfectorPolicy::community,
+              "the default infector policy is community");
+        check(!options.infector_policy_explicit,
+              "the default infector policy is not marked explicit");
+    }
+    {
+        const cli::CliOptions options =
+            cli::parse_cli(with_flag("--infector-policy", "risk-averse"));
+        check(options.infector_policy == simulation::InfectorPolicy::risk_averse,
+              "--infector-policy risk-averse parses");
+        check(options.infector_policy_explicit,
+              "an explicit --infector-policy is recorded as explicit");
+        check(!options.custom_scenario,
+              "--infector-policy alone never marks the run a custom scenario");
+    }
+    {
+        const cli::CliOptions options =
+            cli::parse_cli(with_flag("--infector-policy", "community"));
+        check(options.infector_policy == simulation::InfectorPolicy::community,
+              "an explicit --infector-policy community parses");
+        check(options.infector_policy_explicit,
+              "an explicit --infector-policy community is still recorded as explicit");
+        check(!options.custom_scenario,
+              "an explicit --infector-policy community does not mark the run custom");
+    }
+    expect_reject(with_flag("--infector-policy", "Risk-Averse"),
+                  "a wrong-case --infector-policy value (case sensitive, no aliases)");
+    expect_reject(with_flag("--infector-policy", "COMMUNITY"),
+                  "a wrong-case --infector-policy value");
+    expect_reject(with_flag("--infector-policy", "risk_averse"),
+                  "an underscore-spelled --infector-policy value (no aliases)");
+    expect_reject(with_flag("--infector-policy", "foo"),
+                  "an unknown --infector-policy value");
+    expect_reject(with_flag("--infector-policy", ""), "an empty --infector-policy value");
+    {
+        Args args = bounded_args();
+        args.push_back("--infector-policy");
+        args.push_back("risk-averse");
+        args.push_back("--infector-policy");
+        args.push_back("community");
+        expect_reject(args, "a duplicate --infector-policy flag");
+    }
+    // --- risk-averse requires a strictly positive community rate, checked
+    // early for an explicit conflict --------------------------------------
+    {
+        Args args = only_flag("--infector-policy", "risk-averse");
+        args.push_back("--community-rate");
+        args.push_back("0");
+        expect_reject(args,
+                      "--infector-policy risk-averse combined with an explicit "
+                      "--community-rate of exactly 0");
+    }
+    {
+        Args args = only_flag("--infector-policy", "risk-averse");
+        args.push_back("--community-rate");
+        args.push_back("-0.01");
+        expect_reject(args,
+                      "--infector-policy risk-averse combined with a negative "
+                      "--community-rate (rejected by the generic bound first)");
+    }
+    {
+        Args args = only_flag("--infector-policy", "risk-averse");
+        args.push_back("--community-rate");
+        args.push_back("0.01");
+        expect_accept(args,
+                      "--infector-policy risk-averse with an explicit positive "
+                      "--community-rate");
+    }
+    {
+        // Exam room's published community rate (0.03) is already strictly
+        // positive, so risk-averse resolves without any explicit
+        // --community-rate override.
+        const cli::ResolvedRun run =
+            cli::resolve_run(cli::parse_cli(only_flag("--infector-policy", "risk-averse")));
+        check(run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse,
+              "risk-averse resolves using the category's positive default community rate");
+    }
+
+    // --- Infector policy: resolved scenario storage and provenance ----------
+    {
+        const cli::ResolvedRun run = cli::resolve_run(cli::parse_cli(bounded_args()));
+        check(run.scenario.infector_policy == simulation::InfectorPolicy::community,
+              "a bare run resolves to the community infector policy");
+        check(!run.scenario.infector_policy_explicit,
+              "a bare run reports no explicit infector-policy override");
+        check(run.overrides.infector_policy == simulation::InfectorPolicy::community,
+              "the effective overrides record the community policy by default");
+        check(!run.overrides.infector_policy_explicit,
+              "the effective overrides record no explicit infector-policy provenance by default");
+    }
+    {
+        const cli::ResolvedRun run =
+            cli::resolve_run(cli::parse_cli(with_flag("--infector-policy", "risk-averse")));
+        check(run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse,
+              "--infector-policy risk-averse resolves to the risk-averse scenario policy");
+        check(run.scenario.infector_policy_explicit,
+              "an explicit --infector-policy reaches the resolved scenario as explicit");
+        check(run.overrides.infector_policy == simulation::InfectorPolicy::risk_averse &&
+                  run.overrides.infector_policy_explicit,
+              "the effective overrides carry the explicit risk-averse policy");
+        check(!run.custom_scenario && !run.scenario.custom_scenario,
+              "an infector-policy override alone is not a custom scenario (it is an estimand "
+              "change, not a four-field scientific override)");
+    }
+
+    // --- Infector policy combines with both output modes --------------------
+    {
+        Args args = with_flag("--mode", "ecai");
+        args.push_back("--infector-policy");
+        args.push_back("risk-averse");
+        const cli::ResolvedRun run = cli::resolve_run(cli::parse_cli(args));
+        check(run.scenario.mode == simulation::OutputMode::ecai &&
+                  run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse,
+              "risk-averse combines with --mode ecai");
+    }
+    {
+        Args args = with_flag("--mode", "probability");
+        args.push_back("--infector-policy");
+        args.push_back("risk-averse");
+        const cli::ResolvedRun run = cli::resolve_run(cli::parse_cli(args));
+        check(run.scenario.mode == simulation::OutputMode::probability &&
+                  run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse,
+              "risk-averse combines with --mode probability");
+    }
+
+    // --- Infector-policy tamper check, mirroring the mode tamper block above ---
+    {
+        cli::CliOptions options = cli::parse_cli(bounded_args());
+        options.infector_policy = simulation::InfectorPolicy::risk_averse;
+        bool rejected = false;
+        try {
+            cli::resolve_run(options);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected,
+              "resolve_run rejects an unprovenanced change to the infector policy");
+    }
+
+    // --- Direct scenario construction rejects invalid risk-averse inputs,
+    // even when the CLI is bypassed entirely --------------------------------
+    {
+        const cli::ResolvedRun base = cli::resolve_run(cli::parse_cli(bounded_args()));
+        simulation::EffectiveOverrides overrides;
+        overrides.infector_policy = simulation::InfectorPolicy::risk_averse;
+        overrides.infector_policy_explicit = true;
+        overrides.community_infection_rate = 0.0;
+        simulation::EffectiveConfiguration config = base.config;
+        config.community_infection_rate = 0.0;
+        bool rejected = false;
+        try {
+            simulation::resolve_scenario(*base.category, config, overrides);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected,
+              "direct resolve_scenario rejects risk-averse with community_infection_rate <= 0, "
+              "bypassing the CLI");
+    }
+    {
+        const cli::ResolvedRun base = cli::resolve_run(cli::parse_cli(bounded_args()));
+        simulation::EffectiveOverrides overrides;
+        overrides.infector_policy = simulation::InfectorPolicy::risk_averse;
+        overrides.infector_policy_explicit = true;
+        overrides.occupants = 0;
+        simulation::EffectiveConfiguration config = base.config;
+        config.i0 = 0;
+        bool rejected = false;
+        try {
+            simulation::resolve_scenario(*base.category, config, overrides);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected,
+              "direct resolve_scenario rejects risk-averse with occupants (I0) == 0, bypassing "
+              "the CLI");
+    }
+    {
+        // A valid direct construction (no CLI involved at all) still resolves.
+        const cli::ResolvedRun base = cli::resolve_run(cli::parse_cli(bounded_args()));
+        simulation::EffectiveOverrides overrides;
+        overrides.infector_policy = simulation::InfectorPolicy::risk_averse;
+        overrides.infector_policy_explicit = true;
+        const simulation::EffectiveScenario scenario =
+            simulation::resolve_scenario(*base.category, base.config, overrides);
+        check(scenario.infector_policy == simulation::InfectorPolicy::risk_averse,
+              "a valid direct resolve_scenario call resolves the risk-averse policy");
     }
 
     // --- Output mode: scenario resolution (additive) ------------------------

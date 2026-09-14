@@ -56,6 +56,21 @@ enum class OutputMode { ecai = 0, probability = 1 };
 static_assert(static_cast<int>(OutputMode::ecai) == 0,
               "OutputMode::ecai must be enumerator 0 so value-initialization defaults to it");
 
+// The infector-handling policy a run resolves to
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md): the current unconditional
+// binomial infector count (default, including zero-infector rows), or a
+// risk-averse policy that conditions every simulation on at least one
+// infector. Independent of OutputMode: either policy may be combined with
+// either output mode. `community` is enumerator 0, so a value-initialized
+// EffectiveScenario/EffectiveOverrides defaults to the unchanged community
+// behavior without any explicit initialization. Phase 3 (this header/CLI)
+// resolves and validates the policy; the conditional sampling and simulation
+// integration that consumes it are added in later phases.
+enum class InfectorPolicy { community = 0, risk_averse = 1 };
+static_assert(static_cast<int>(InfectorPolicy::community) == 0,
+              "InfectorPolicy::community must be enumerator 0 so value-initialization defaults "
+              "to it");
+
 // The fully resolved per-run scenario used by one replicate: category
 // defaults after any explicit override, plus the run-level scientific
 // inputs. Units follow model::ECAiInputs (volume m^3, duration h, everything
@@ -93,6 +108,16 @@ struct EffectiveScenario {
     OutputMode mode = OutputMode::ecai;
     double input_ecai_l_s_person = 0.0;
     bool input_ecai_overridden = false;
+
+    // Infector policy (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 3),
+    // resolved once here and never re-derived from a raw CLI flag by any
+    // downstream consumer. `infector_policy_explicit` records whether
+    // --infector-policy appeared on the command line; it is provenance only
+    // and, like `mode`, is deliberately not ORed into `custom_scenario`
+    // above -- the policy is an estimand change, not a four-field scientific
+    // override (Phase 5).
+    InfectorPolicy infector_policy = InfectorPolicy::community;
+    bool infector_policy_explicit = false;
 };
 
 // The four category scientific inputs a run may override. An unset optional
@@ -110,6 +135,11 @@ struct EffectiveOverrides {
     // where an unset optional resolves to the category's published ECAi.
     OutputMode mode = OutputMode::ecai;
     std::optional<double> input_ecai_l_s_person;
+
+    // Infector policy override (default community) plus its explicit-value
+    // provenance; see EffectiveScenario::infector_policy above.
+    InfectorPolicy infector_policy = InfectorPolicy::community;
+    bool infector_policy_explicit = false;
 };
 
 // Resolves the category record plus explicit overrides into one scenario,
@@ -127,10 +157,18 @@ struct EffectiveOverrides {
 //     finite and inside [0, 1];
 //   - overrides.mode is probability and the resolved input ECAi (the
 //     override, or else category.published_ecai_Lsp) is not finite or is
-//     negative.
-// Mode and the resolved input ECAi are deliberately not part of `config`:
-// they are not fingerprint fields (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
-// section 6), so this function reads them only from `overrides`.
+//     negative;
+//   - overrides.infector_policy is not a declared InfectorPolicy enumerator,
+//     or it is risk_averse and the resolved community_infection_rate is not
+//     strictly positive (I0 < 1 is already rejected unconditionally above).
+//     This authoritative check runs here, before any LHS generation or
+//     allocation, and applies identically whether the caller went through
+//     the CLI or constructed `overrides` directly.
+// Mode, the resolved input ECAi and the infector policy are deliberately not
+// part of `config`: they are not fingerprint fields
+// (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 6;
+// docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 4/7), so this function reads
+// them only from `overrides`.
 EffectiveScenario resolve_scenario(const OccupancyCategory& category,
                                     const seed_manager::EffectiveConfig& config,
                                     const EffectiveOverrides& overrides = EffectiveOverrides{});
@@ -238,6 +276,14 @@ struct ReplicateResult {
     // Exactly N values, in original simulation index order (never sorted).
     // Authoritative Stage 6 realized infector counts in the same stable order.
     std::vector<long long> infector_counts;
+    // The resolved infector policy this replicate ran under
+    // (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 5), copied verbatim from
+    // the scenario that produced this replicate -- not re-derived from the
+    // plan -- so a caller can reconcile scenario/plan/result agreement (and,
+    // in a batch, detect a mixed-policy run) without re-reading the plan.
+    // `community` (enumerator 0) is the default, matching InfectorPolicy's
+    // own zero-valued default.
+    InfectorPolicy infector_policy = InfectorPolicy::community;
     // The resolved mode this replicate ran in (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md
     // section 4.2). Determines which of the two pairs below is populated;
     // the other stays at its default (empty vector, 0.0 percentile).
@@ -319,12 +365,22 @@ ReplicateResult run_replicate(std::uint64_t base_seed,
                                const ReplicateOptions& options = ReplicateOptions{});
 
 // Runs replicates serially at indices [0, R), preserving each complete Stage
-// 10 result. R and confidence are preflighted before any replicate runs or
-// batch allocation. ResourcePolicy remains scoped to each run_replicate call.
-inline ReplicateBatch run_replicates(
-    std::uint64_t base_seed, EffectiveConfiguration config, const OccupancyCategory& category,
-    const EffectiveOverrides& overrides = EffectiveOverrides{},
-    const SimulationOptions& options = SimulationOptions{}) {
+// 10 result and appending each result's raw (unrounded, unadjusted)
+// percentile estimate to raw_percentiles_out, in replicate-index order. R and
+// confidence are preflighted before any replicate runs or batch allocation.
+// ResourcePolicy remains scoped to each run_replicate call.
+//
+// This is the Stage 10-only half of run_replicates below: it calls no Stage
+// 11 statistics function, so it links against the Stage 3-10 sources alone
+// (see ecai_cpp2_simulation_tests in CMakeLists.txt, which -- unlike
+// ecai_cpp2_statistics_tests -- does not link src/statistics.cpp). Only
+// run_replicates itself, which turns raw_percentiles_out into a summary via
+// statistics::summarize_replicates, requires that Stage 11 link.
+inline ReplicateBatch run_replicate_batch(std::uint64_t base_seed, EffectiveConfiguration config,
+                                           const OccupancyCategory& category,
+                                           const EffectiveOverrides& overrides,
+                                           const SimulationOptions& options,
+                                           std::vector<double>& raw_percentiles_out) {
     // Batch-only inputs are validated before scenario resolution, allocation,
     // or stochastic work. The ordered comparisons also reject NaN.
     if (!(config.confidence_level > 0.0) || !(config.confidence_level < 1.0)) {
@@ -348,23 +404,26 @@ inline ReplicateBatch run_replicates(
     const std::size_t replicate_count = static_cast<std::size_t>(config.replicates_r);
 
     ReplicateBatch batch;
-    std::vector<double> raw_percentiles;
     if (replicate_count > batch.replicates.max_size() ||
-        replicate_count > raw_percentiles.max_size()) {
+        replicate_count > raw_percentiles_out.max_size()) {
         throw std::invalid_argument("simulation: replicates R exceeds vector max_size");
     }
     try {
         batch.replicates.reserve(replicate_count);
-        raw_percentiles.reserve(replicate_count);
+        raw_percentiles_out.reserve(replicate_count);
     } catch (const std::bad_alloc&) {
         throw std::runtime_error("simulation: unable to allocate replicate batch storage");
     }
 
-    // All replicates in one batch must resolve to the same mode: mode is not
-    // a fingerprint field, so nothing else enforces this, and run_replicates
-    // is the first point that observes every replicate's resolved mode
-    // together (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.2).
+    // All replicates in one batch must resolve to the same mode and the same
+    // infector policy: neither is a fingerprint field, so nothing else
+    // enforces this, and this is the first point that observes every
+    // replicate's resolved mode/policy together
+    // (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.2;
+    // docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 4's "batch-consistency
+    // check rejecting mixed policies").
     std::optional<OutputMode> batch_mode;
+    std::optional<InfectorPolicy> batch_infector_policy;
     for (std::size_t index = 0; index < replicate_count; ++index) {
         ReplicateResult result = run_replicate(base_seed, config,
                                                static_cast<std::uint64_t>(index), category,
@@ -375,11 +434,33 @@ inline ReplicateBatch run_replicates(
             throw std::runtime_error(
                 "simulation: replicates within one batch resolved to different output modes");
         }
-        raw_percentiles.push_back(result.mode == OutputMode::probability
-                                       ? result.percentile_probability
-                                       : result.percentile_l_s_person);
+        if (!batch_infector_policy.has_value()) {
+            batch_infector_policy = result.infector_policy;
+        } else if (*batch_infector_policy != result.infector_policy) {
+            throw std::runtime_error(
+                "simulation: replicates within one batch resolved to different infector "
+                "policies");
+        }
+        raw_percentiles_out.push_back(result.mode == OutputMode::probability
+                                           ? result.percentile_probability
+                                           : result.percentile_l_s_person);
         batch.replicates.push_back(std::move(result));
     }
+    return batch;
+}
+
+// Runs replicates serially at indices [0, R), preserving each complete Stage
+// 10 result, then summarizes their raw percentile estimates via
+// statistics::summarize_replicates. Thin wrapper over run_replicate_batch
+// above; see that function for the preflighting and per-replicate work this
+// delegates.
+inline ReplicateBatch run_replicates(
+    std::uint64_t base_seed, EffectiveConfiguration config, const OccupancyCategory& category,
+    const EffectiveOverrides& overrides = EffectiveOverrides{},
+    const SimulationOptions& options = SimulationOptions{}) {
+    std::vector<double> raw_percentiles;
+    ReplicateBatch batch =
+        run_replicate_batch(base_seed, config, category, overrides, options, raw_percentiles);
     batch.summary = statistics::summarize_replicates(raw_percentiles, config.confidence_level);
     return batch;
 }

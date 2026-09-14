@@ -70,6 +70,17 @@ void validate_output_mode(OutputMode mode) {
     throw std::invalid_argument("simulation: unknown OutputMode");
 }
 
+// Rejects an InfectorPolicy outside the declared enum before any scenario
+// field is trusted (same defensive pattern as validate_output_mode above).
+void validate_infector_policy(InfectorPolicy policy) {
+    switch (policy) {
+        case InfectorPolicy::community:
+        case InfectorPolicy::risk_averse:
+            return;
+    }
+    throw std::invalid_argument("simulation: unknown InfectorPolicy");
+}
+
 // Cross-checks the four inputs to run_replicate_from_plan before any bank is
 // built: config and scenario must name the same canonical category as the
 // supplied record, every config scientific/run input must equal the
@@ -103,6 +114,15 @@ void validate_plan_context(const seed_manager::EffectiveConfig& config,
         throw std::invalid_argument(
             kContext + ": simulations N disagrees among config, scenario and plan");
     }
+    // Policy agreement (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 5): the
+    // enumerator values are frozen to agree between simulation::InfectorPolicy
+    // and sampling_plan::InfectorPolicy, so a plain static_cast is the
+    // authoritative conversion (see sampling_plan.h). A mismatch here is a
+    // tampered or stale plan, not a user error.
+    if (static_cast<sampling_plan::InfectorPolicy>(scenario.infector_policy) != plan.policy) {
+        throw std::invalid_argument(
+            kContext + ": scenario infector policy disagrees with the plan's policy");
+    }
 }
 
 // Every scenario domain check, run before any allocation or sampling.
@@ -133,6 +153,26 @@ void validate_scenario(const EffectiveScenario& scenario) {
         if (scenario.input_ecai_overridden || scenario.input_ecai_l_s_person != 0.0) {
             throw std::invalid_argument(
                 "simulation: an ECAi-mode scenario must not carry a probability-mode input ECAi");
+        }
+    }
+
+    // Risk-averse infector policy (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md
+    // Phase 3): authoritative, applies to both output modes, and runs before
+    // any LHS generation or allocation (this function is called from
+    // resolve_scenario and from every replicate entry point, all of which
+    // run before Stage 6 sampling). I0 < 1 is already rejected unconditionally
+    // above; the community_infection_rate <= 0 check below is the one
+    // domain restriction that differs between the two policies (community
+    // mode accepts a rate of exactly 0).
+    validate_infector_policy(scenario.infector_policy);
+    if (scenario.infector_policy == InfectorPolicy::risk_averse) {
+        if (scenario.occupants < 1) {
+            throw std::invalid_argument(
+                "simulation: risk-averse infector policy requires occupants (I0) >= 1");
+        }
+        if (!(scenario.community_infection_rate > 0.0)) {
+            throw std::invalid_argument(
+                "simulation: risk-averse infector policy requires community_infection_rate > 0");
         }
     }
 }
@@ -332,6 +372,11 @@ EffectiveScenario resolve_scenario(const OccupancyCategory& category,
     // overrides.input_ecai_l_s_person: the CLI has already rejected supplying
     // --input-ecai without --mode probability.
 
+    // Resolved once here, and forwarded unchanged to every downstream
+    // consumer; nothing branches on a raw CLI flag (Phase 3).
+    scenario.infector_policy = overrides.infector_policy;
+    scenario.infector_policy_explicit = overrides.infector_policy_explicit;
+
     scenario.occupants_overridden = overrides.occupants.has_value();
     scenario.volume_overridden = overrides.volume_m3.has_value();
     scenario.mask_efficiency_overridden = overrides.mask_efficiency.has_value();
@@ -371,6 +416,14 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     // --- Every rejection happens before the output vector is allocated. ---
     validate_scenario(scenario);
     validate_plan(plan);
+    // Cross-checks scenario.infector_policy against plan.policy and, for a
+    // risk-averse plan, re-asserts the no-zero-infector invariant
+    // (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 5: "tampered
+    // scenario/plan/output policy disagreement" must be rejected here, before
+    // any output vector is allocated).
+    sampling_plan::validate_plan_policy_context(
+        plan, static_cast<sampling_plan::InfectorPolicy>(scenario.infector_policy),
+        options.policy);
     validate_banks(plan, banks);
     if (scenario.simulations_n != plan.n) {
         throw std::invalid_argument(
@@ -380,6 +433,7 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
 
     ReplicateResult result;
     result.mode = scenario.mode;
+    result.infector_policy = scenario.infector_policy;
     result.percentile = scenario.percentile;
     result.counters.n = plan.n;
     result.infector_counts = plan.counts;
@@ -548,6 +602,16 @@ ReplicateResult run_replicate_from_plan(const seed_manager::SeedManager& seeds,
                                          const ReplicateOptions& options) {
     validate_scenario(scenario);
     validate_plan(plan);
+    // Reject a policy mismatch (or a risk-averse plan carrying a zero-infector
+    // row) before build_parameter_banks allocates or generates any LHS list
+    // for this plan (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 5).
+    // validate_plan_context below repeats the plain policy-equality half of
+    // this check for its own aggregate diagnostic; run_replicate_from_banks
+    // repeats the full check again once banks exist, so a caller that skips
+    // straight to it is still protected.
+    sampling_plan::validate_plan_policy_context(
+        plan, static_cast<sampling_plan::InfectorPolicy>(scenario.infector_policy),
+        options.policy);
     validate_plan_context(config, category, scenario, plan);
     // The banks live only for this call: they are destroyed on return, so no
     // caller can re-read, re-extend, or re-traverse them.
@@ -565,10 +629,15 @@ ReplicateResult run_replicate(std::uint64_t base_seed,
                                const ReplicateOptions& options) {
     const EffectiveScenario scenario = resolve_scenario(category, config, overrides);
     const seed_manager::SeedManager seeds(base_seed);
-    const sampling_plan::SamplingPlan plan =
-        sampling_plan::build_sampling_plan(seeds, config, replicate_index, scenario.simulations_n,
-                                           scenario.occupants, scenario.community_infection_rate,
-                                           options.policy);
+    // Forwards the resolved policy unchanged (docs/RISK_AVERSE_
+    // IMPLEMENTATION_PLAN.md Phase 5): build_sampling_plan's own seed
+    // derivation is identical regardless of `infector_policy` (Phase 4), so
+    // this branch changes only how each u is transformed into a count, never
+    // which u values are generated or consumed.
+    const sampling_plan::SamplingPlan plan = sampling_plan::build_sampling_plan(
+        seeds, config, replicate_index, scenario.simulations_n, scenario.occupants,
+        scenario.community_infection_rate, options.policy,
+        static_cast<sampling_plan::InfectorPolicy>(scenario.infector_policy));
     return run_replicate_from_plan(seeds, config, replicate_index, plan, category, scenario,
                                     options);
 }

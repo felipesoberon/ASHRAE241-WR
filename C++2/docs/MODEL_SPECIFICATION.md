@@ -916,3 +916,9 @@ documented numerical evidence and independent approval.
 The current verification status, bounded reference cases, exact counters, and non-equivalence
 limitations are recorded in [`VALIDATION.md`](VALIDATION.md). Passing implementation tests does
 not establish independent scientific validity or publication reproduction.
+
+## Risk-averse policy
+
+Risk-averse mode conditions the initial binomial infector count on at least one infector for both ECAi and forward infection probability. Its conditional PPF is inverted in CDF space, with explicit endpoint and limiting branches; it is not an affine remapping of a uniform. `I0==0` and `p<=0` are rejected. For `p==1`, the count is deterministic and `zero_mass=0`; any `zero_mass==1` limiting branch is recorded in provenance.
+
+Risk-averse results use distinct schemas (`stage13-ra-v1` and `stage13-prob-ra-v1`), require zero-infector count 0, active count N, and total infectors at least N. Population comparators are suppressed as `NOT_APPLICABLE_RISK_AVERSE`; this estimand is conditional on an infector and is not comparable with the published community comparator.

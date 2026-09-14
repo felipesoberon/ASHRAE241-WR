@@ -37,6 +37,18 @@ bool checked_add(std::size_t a, std::size_t b, std::size_t& out) {
     return true;
 }
 
+// Rejects an InfectorPolicy outside the declared enum before it is trusted
+// (the same defensive pattern simulation.cpp's validate_infector_policy
+// uses). No `default:` label, so a future third enumerator trips -Wswitch.
+void require_known_infector_policy(InfectorPolicy policy, const char* context) {
+    switch (policy) {
+        case InfectorPolicy::community:
+        case InfectorPolicy::risk_averse:
+            return;
+    }
+    throw std::invalid_argument(std::string(context) + ": unknown InfectorPolicy");
+}
+
 }  // namespace
 
 CountSummary summarize_counts(const std::vector<long long>& counts) {
@@ -66,7 +78,8 @@ CountSummary summarize_counts(const std::vector<long long>& counts) {
 SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
                                   const seed_manager::EffectiveConfig& config,
                                   std::uint64_t replicate_index, std::size_t n, long long i0,
-                                  double p, const ResourcePolicy& policy) {
+                                  double p, const ResourcePolicy& policy,
+                                  InfectorPolicy infector_policy) {
     if (n == 0) {
         throw std::invalid_argument("build_sampling_plan: n must be nonzero");
     }
@@ -75,6 +88,21 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
     }
     if (!std::isfinite(p) || p < 0.0 || p > 1.0) {
         throw std::invalid_argument("build_sampling_plan: p must be finite and in [0, 1]");
+    }
+    require_known_infector_policy(infector_policy, "build_sampling_plan");
+    // Risk-averse's own domain: I0 >= 1 and p strictly positive, checked
+    // here as the authoritative direct-call guard regardless of whether a
+    // CLI/scenario layer already performed the same check
+    // (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 4).
+    if (infector_policy == InfectorPolicy::risk_averse) {
+        if (i0 < 1) {
+            throw std::invalid_argument(
+                "build_sampling_plan: risk-averse infector policy requires i0 >= 1");
+        }
+        if (!(p > 0.0)) {
+            throw std::invalid_argument(
+                "build_sampling_plan: risk-averse infector policy requires p > 0");
+        }
     }
 
     // --- Every remaining check runs before any allocation. ---
@@ -105,10 +133,14 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
 
     // Peak Stage-6 working set: the n-length uniform and count vectors are
     // conservatively counted as live alongside the BinomialPpfTable's peak of
-    // two (i0+1)-double buffers (the transient PMF buffer plus the retained
-    // CDF buffer, see distributions.h).
+    // three (i0+1)-double buffers (the transient PMF buffer, the retained
+    // CDF buffer, and the retained conditional-tail buffer, see
+    // distributions.h). The conditional-tail buffer is built unconditionally
+    // by the table's constructor for every policy -- not only for
+    // risk_averse -- so it is charged against every build_sampling_plan
+    // call regardless of `infector_policy`.
     constexpr std::size_t kBytesPerSimulation = sizeof(double) + sizeof(long long);
-    constexpr std::size_t kBinomialTableBuffers = 2;
+    constexpr std::size_t kBinomialTableBuffers = 3;
     std::size_t vectors_bytes = 0;
     if (!checked_mul(n, kBytesPerSimulation, vectors_bytes)) {
         throw std::runtime_error("build_sampling_plan: vector byte-count computation overflows size_t");
@@ -148,21 +180,45 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
                                                   static_cast<std::uint64_t>(n));
     const std::vector<double> uniforms = lhs::generate_lhs_1d(n, seed);
 
-    // One table per replicate: the constant-(i0, p) PMF/CDF is built once
-    // here, and each u is then resolved against it with exactly
-    // distributions::binomial_ppf(u, i0, p)'s result.
+    // One table per replicate: the constant-(i0, p) PMF/CDF/conditional-tail
+    // is built once here, and each u is then resolved against it -- through
+    // ppf() (community) or conditional_ppf_at_least_one() (risk_averse) --
+    // with exactly the same result the corresponding distributions.h entry
+    // point would give for that u.
     const distributions::BinomialPpfTable table(i0, p);
+
+    InfectorPolicyProvenance provenance;
+    provenance.policy = infector_policy;
+    if (infector_policy == InfectorPolicy::risk_averse) {
+        provenance.zero_mass = table.zero_mass();
+        provenance.zero_mass_rounded_to_zero = (provenance.zero_mass == 0.0);
+        provenance.zero_mass_rounded_to_one = (provenance.zero_mass >= 1.0);
+        provenance.conditional_ppf_algorithm_version = kConditionalPpfAlgorithmVersion;
+        provenance.deterministic_branch_used = (p >= 1.0) || provenance.zero_mass_rounded_to_one;
+    }
 
     std::vector<long long> counts;
     counts.reserve(n);
-    for (double u : uniforms) {
-        const long long count = table.ppf(u);
-        if (count < 0 || count > i0) {
-            throw std::runtime_error("build_sampling_plan: binomial ppf returned " +
-                                      std::to_string(count) + ", outside [0, " +
-                                      std::to_string(i0) + "]");
+    if (infector_policy == InfectorPolicy::risk_averse) {
+        for (double u : uniforms) {
+            const long long count = table.conditional_ppf_at_least_one(u);
+            if (count < 1 || count > i0) {
+                throw std::runtime_error(
+                    "build_sampling_plan: risk-averse conditional ppf returned " +
+                    std::to_string(count) + ", outside [1, " + std::to_string(i0) + "]");
+            }
+            counts.push_back(count);
         }
-        counts.push_back(count);
+    } else {
+        for (double u : uniforms) {
+            const long long count = table.ppf(u);
+            if (count < 0 || count > i0) {
+                throw std::runtime_error("build_sampling_plan: binomial ppf returned " +
+                                          std::to_string(count) + ", outside [0, " +
+                                          std::to_string(i0) + "]");
+            }
+            counts.push_back(count);
+        }
     }
 
     const CountSummary summary = summarize_counts(counts);
@@ -175,7 +231,58 @@ SamplingPlan build_sampling_plan(const seed_manager::SeedManager& seeds,
     plan.k_total = summary.k_total;
     plan.susceptible_draws = summary.n_active;
     plan.infector_draws = summary.k_total;
+    plan.policy = infector_policy;
+    plan.infector_provenance = provenance;
+    plan.lhs_generated = uniforms.size();
+    plan.lhs_consumed = n;
     return plan;
+}
+
+void validate_plan_policy_context(const SamplingPlan& plan, InfectorPolicy expected_policy,
+                                   const ResourcePolicy& policy) {
+    require_known_infector_policy(expected_policy, "validate_plan_policy_context");
+    require_known_infector_policy(plan.policy, "validate_plan_policy_context");
+    if (plan.policy != expected_policy) {
+        throw std::invalid_argument(
+            "validate_plan_policy_context: plan policy disagrees with the expected policy");
+    }
+
+    if (plan.counts.size() != plan.n) {
+        throw std::invalid_argument(
+            "validate_plan_policy_context: plan.n disagrees with plan.counts.size()");
+    }
+    const CountSummary summary = summarize_counts(plan.counts);
+    if (summary.n_zero != plan.n_zero || summary.n_active != plan.n_active ||
+        summary.k_total != plan.k_total || plan.susceptible_draws != summary.n_active ||
+        plan.infector_draws != summary.k_total) {
+        throw std::invalid_argument(
+            "validate_plan_policy_context: plan accounting disagrees with an independent "
+            "summarize_counts(plan.counts)");
+    }
+
+    // Re-checks n_active <= n, k_total >= n_active, and every ResourcePolicy
+    // ceiling; a plan that could never be banked is rejected here too,
+    // before any bank exists.
+    (void)compute_bank_budget(plan.n, plan.n_active, plan.k_total, policy);
+
+    if (plan.policy == InfectorPolicy::risk_averse) {
+        if (plan.n_zero != 0 || plan.n_active != plan.n) {
+            throw std::invalid_argument(
+                "validate_plan_policy_context: a risk-averse plan must have no zero-infector "
+                "rows (n_active == n)");
+        }
+        if (plan.k_total < plan.n) {
+            throw std::invalid_argument(
+                "validate_plan_policy_context: a risk-averse plan must have k_total >= n");
+        }
+        for (long long c : plan.counts) {
+            if (c < 1) {
+                throw std::invalid_argument(
+                    "validate_plan_policy_context: a risk-averse plan must have every count "
+                    ">= 1");
+            }
+        }
+    }
 }
 
 

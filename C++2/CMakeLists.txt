@@ -135,6 +135,7 @@ add_executable(ecai_cpp2_simulation_tests
     src/sampling_plan.cpp
     src/model.cpp
     src/simulation.cpp
+    src/statistics.cpp
     tests/test_simulation.cpp
 )
 target_include_directories(ecai_cpp2_simulation_tests PRIVATE include)

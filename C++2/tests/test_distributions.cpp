@@ -858,6 +858,226 @@ int main() {
     }
 
     // ================================================================
+    // BinomialPpfTable::zero_mass() / conditional_ppf_at_least_one(): Phase 2
+    // risk-averse infector-policy helper (RISK_AVERSE_IMPLEMENTATION_PLAN.md
+    // Phase 2). Community BinomialPpfTable::ppf() behavior above is
+    // unchanged by this addition; the "ordinary ppf regression" block below
+    // re-confirms that explicitly.
+    // ================================================================
+    {
+        // ---- zero_mass(): degenerate cases answered without a cdf_ table,
+        // plus a literal already pinned above as the exact cdf_[0] boundary
+        // for BinomialPpfTable(400, 0.01). ----
+        check(BinomialPpfTable(0, 0.3).zero_mass() == 1.0,
+              "zero_mass(): n=0 is P(X=0)=1 regardless of p");
+        check(BinomialPpfTable(10, 0.0).zero_mass() == 1.0,
+              "zero_mass(): p=0 is P(X=0)=1 (every trial fails)");
+        check(BinomialPpfTable(10, 1.0).zero_mass() == 0.0,
+              "zero_mass(): p=1 is P(X=0)=0 (every trial succeeds, n>=1)");
+        check(close(BinomialPpfTable(400, 0.01).zero_mass(), 0.017950553275045196, 1e-9, 1e-9),
+              "zero_mass(400, 0.01) matches the pinned SciPy binom.cdf(0, 400, 0.01) literal "
+              "used above as cdf_[0]'s boundary");
+
+        // ---- Independent conditional-PMF oracle, n=5, p=0.3: a direct
+        // combinatorial computation (not the production mode-centered
+        // lgamma/exp recurrence), used to verify conditional_ppf_at_least_one
+        // agrees with the mathematical conditional-given-X>=1 distribution.
+        // ----
+        auto binom_coeff = [](int n, int k) -> double {
+            double c = 1.0;
+            for (int i = 0; i < k; ++i) {
+                c = c * static_cast<double>(n - i) / static_cast<double>(i + 1);
+            }
+            return c;
+        };
+        const int oracle_n = 5;
+        const double oracle_p = 0.3;
+        double oracle_pmf[oracle_n + 1];
+        for (int k = 0; k <= oracle_n; ++k) {
+            oracle_pmf[k] = binom_coeff(oracle_n, k) * std::pow(oracle_p, k) *
+                             std::pow(1.0 - oracle_p, oracle_n - k);
+        }
+        double oracle_tail_sum = 0.0;
+        for (int k = 1; k <= oracle_n; ++k) oracle_tail_sum += oracle_pmf[k];
+        double oracle_T[oracle_n + 1] = {0.0};
+        {
+            double running = 0.0;
+            for (int k = 1; k <= oracle_n; ++k) {
+                running += oracle_pmf[k];
+                oracle_T[k] = running / oracle_tail_sum;
+            }
+        }
+
+        const BinomialPpfTable oracle_table(oracle_n, oracle_p);
+        check(close(oracle_table.zero_mass(), oracle_pmf[0], 1e-9, 1e-9),
+              "zero_mass(5, 0.3) agrees with the independent combinatorial oracle");
+
+        // Probe strictly inside each conditional-PMF interval (skip any
+        // interval narrower than a 0.04 margin) so agreement is checked away
+        // from the boundaries, robust to ordinary last-ULP disagreement
+        // between the oracle and the production compensated-sum recurrence.
+        for (int k = 1; k <= oracle_n; ++k) {
+            const double lo_bound = (k == 1) ? 0.0 : oracle_T[k - 1];
+            const double hi_bound = oracle_T[k];
+            if (hi_bound - lo_bound < 0.04) continue;
+            const double probe = lo_bound + 0.5 * (hi_bound - lo_bound);
+            check(oracle_table.conditional_ppf_at_least_one(probe) == k,
+                  "conditional_ppf_at_least_one(5, 0.3, u=" + std::to_string(probe) +
+                      ") agrees with the conditional-PMF oracle at k=" + std::to_string(k));
+        }
+
+        // Smallest valid u (denorm_min): must land on the smallest support
+        // point of the conditional distribution, k=1.
+        check(oracle_table.conditional_ppf_at_least_one(
+                  std::numeric_limits<double>::denorm_min()) == 1,
+              "conditional_ppf_at_least_one(denorm_min) == 1 (smallest conditional support point)");
+
+        // ---- Self-located exact boundary + nextafter neighbors: bisect for
+        // the exact u at which the result steps from k to k+1, seeded from
+        // safe brackets derived from the oracle above. No hand-derived
+        // floating-point literal is hard-coded as the expected boundary --
+        // the boundary is whatever the implementation itself computes; only
+        // the bracket (known to be on either side, per the oracle) is
+        // supplied from outside. ----
+        for (int k = 1; k <= oracle_n - 1; ++k) {
+            const double prev_bound = (k == 1) ? 0.0 : oracle_T[k - 1];
+            double lo = oracle_T[k] - 0.3 * (oracle_T[k] - prev_bound);
+            double hi = oracle_T[k] + 0.3 * (oracle_T[k + 1] - oracle_T[k]);
+            if (lo <= 0.0) lo = 1e-12;
+            if (hi >= 1.0) hi = 1.0 - 1e-12;
+            if (!(oracle_table.conditional_ppf_at_least_one(lo) == k &&
+                  oracle_table.conditional_ppf_at_least_one(hi) == k + 1)) {
+                continue;  // bracket too tight under fp rounding for this k; skip rather than flake
+            }
+            for (int iter = 0; iter < 200 && std::nextafter(lo, hi) != hi; ++iter) {
+                const double mid = 0.5 * (lo + hi);
+                if (mid == lo || mid == hi) break;
+                if (oracle_table.conditional_ppf_at_least_one(mid) <= k) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            check(oracle_table.conditional_ppf_at_least_one(lo) == k,
+                  "bisected exact boundary: conditional_ppf_at_least_one(lo) == k at k=" +
+                      std::to_string(k));
+            check(oracle_table.conditional_ppf_at_least_one(hi) == k + 1,
+                  "bisected exact boundary: conditional_ppf_at_least_one(hi) == k+1 at k=" +
+                      std::to_string(k));
+            check(oracle_table.conditional_ppf_at_least_one(std::nextafter(lo, 0.0)) == k,
+                  "conditional_ppf_at_least_one one nextafter below the located boundary is still "
+                  "k=" + std::to_string(k));
+            check(oracle_table.conditional_ppf_at_least_one(std::nextafter(hi, 1.0)) == k + 1,
+                  "conditional_ppf_at_least_one one nextafter above the located boundary is still "
+                  "k+1=" + std::to_string(k + 1));
+        }
+
+        // u == 1.0 and its nextafter-below neighbor both resolve to the
+        // upper support endpoint I0 (the u >= 1.0 shortcut and the table
+        // fallback should agree).
+        check(oracle_table.conditional_ppf_at_least_one(1.0) == oracle_n,
+              "conditional_ppf_at_least_one(1.0) == I0 (upper support endpoint)");
+        check(oracle_table.conditional_ppf_at_least_one(std::nextafter(1.0, 0.0)) == oracle_n,
+              "conditional_ppf_at_least_one(nextafter(1,0)) == I0");
+
+        // ---- p = 1: deterministic point mass at I0 for every valid u,
+        // short-circuiting before any table access; zero_mass() == 0.0. ----
+        {
+            const BinomialPpfTable p1(7, 1.0);
+            check(p1.zero_mass() == 0.0, "zero_mass(): p=1 branch reports 0.0");
+            const double p1_us[] = {std::numeric_limits<double>::denorm_min(), 1e-9, 0.001, 0.5,
+                                     0.999, std::nextafter(1.0, 0.0), 1.0};
+            for (double u : p1_us) {
+                check(p1.conditional_ppf_at_least_one(u) == 7,
+                      "conditional_ppf_at_least_one(u=" + std::to_string(u) +
+                          ", I0=7, p=1) == I0 unconditionally");
+            }
+        }
+
+        // ---- I0 = 1: the conditional distribution given X >= 1 has a
+        // single support point, k=1, for every valid u -- exact by
+        // construction (T[1] = pmf[1]/pmf[1] = 1.0), so this exercises exact
+        // boundaries at both ends of the u domain without any hand-derived
+        // literal. ----
+        {
+            const double i0_1_ps[] = {0.001, 0.5, 0.999};
+            for (double p : i0_1_ps) {
+                const BinomialPpfTable table(1, p);
+                const double us[] = {std::numeric_limits<double>::denorm_min(), 1e-9, 0.5, 0.999,
+                                      std::nextafter(1.0, 0.0), 1.0};
+                for (double u : us) {
+                    check(table.conditional_ppf_at_least_one(u) == 1,
+                          "conditional_ppf_at_least_one(I0=1, p=" + std::to_string(p) + ", u=" +
+                              std::to_string(u) + ") == 1 (only conditional support point)");
+                }
+            }
+        }
+
+        // ---- zero_mass rounds to exactly 1.0 for a representable positive
+        // p: I0=1, p=denorm_min. pmf(0) = 1 - denorm_min rounds to exactly
+        // 1.0 in binary64 (denorm_min is far below the ulp of 1.0), so
+        // zero_mass() == 1.0 exactly and the explicit limiting branch must
+        // return 1 rather than searching an unresolvable conditional tail or
+        // falling through a coincidental 0 >= 0 comparison. ----
+        {
+            const BinomialPpfTable table(1, std::numeric_limits<double>::denorm_min());
+            check(table.zero_mass() == 1.0,
+                  "zero_mass(I0=1, p=denorm_min) rounds to exactly 1.0 in binary64");
+            check(table.conditional_ppf_at_least_one(1e-9) == 1,
+                  "conditional_ppf_at_least_one under the zero_mass==1.0 limiting branch returns 1 "
+                  "(small u)");
+            check(table.conditional_ppf_at_least_one(1.0) == 1,
+                  "conditional_ppf_at_least_one under the zero_mass==1.0 limiting branch returns 1 "
+                  "(u=1.0)");
+        }
+
+        // ---- Invalid inputs: I0/p domain (stricter than the table's own
+        // community (n, p) contract) and u domain (matches ppf()'s). ----
+        {
+            check(throws_invalid_argument([] { BinomialPpfTable(0, 0.3).conditional_ppf_at_least_one(0.5); }),
+                  "conditional_ppf_at_least_one on I0=0 throws std::invalid_argument");
+            check(throws_invalid_argument([] { BinomialPpfTable(10, 0.0).conditional_ppf_at_least_one(0.5); }),
+                  "conditional_ppf_at_least_one on p=0 throws std::invalid_argument");
+
+            const BinomialPpfTable table(10, 0.3);
+            check(throws_invalid_argument([&] { table.conditional_ppf_at_least_one(0.0); }),
+                  "conditional_ppf_at_least_one(0.0) throws std::invalid_argument");
+            check(throws_invalid_argument([&] { table.conditional_ppf_at_least_one(-0.1); }),
+                  "conditional_ppf_at_least_one(u<0) throws std::invalid_argument");
+            check(throws_invalid_argument([&] { table.conditional_ppf_at_least_one(1.1); }),
+                  "conditional_ppf_at_least_one(u>1) throws std::invalid_argument");
+            check(throws_invalid_argument(
+                      [&] { table.conditional_ppf_at_least_one(std::numeric_limits<double>::quiet_NaN()); }),
+                  "conditional_ppf_at_least_one(NaN) throws std::invalid_argument");
+            check(throws_invalid_argument(
+                      [&] { table.conditional_ppf_at_least_one(std::numeric_limits<double>::infinity()); }),
+                  "conditional_ppf_at_least_one(+inf) throws std::invalid_argument");
+            check(throws_invalid_argument([&] {
+                      table.conditional_ppf_at_least_one(-std::numeric_limits<double>::infinity());
+                  }),
+                  "conditional_ppf_at_least_one(-inf) throws std::invalid_argument");
+        }
+
+        // ---- Ordinary ppf() regression: adding conditional_tail_ storage to
+        // the constructor must not perturb community ppf() results. ----
+        {
+            struct NP { long long n; double p; };
+            const NP params[] = {{400, 0.01}, {400, 0.03}, {10, 0.3}, {1, 0.5}, {161, 0.5}};
+            bool regression_ok = true;
+            for (const NP& np : params) {
+                const BinomialPpfTable table(np.n, np.p);
+                for (int i = 1; i <= 500 && regression_ok; ++i) {
+                    const double u = static_cast<double>(i) / 500.0;
+                    regression_ok = table.ppf(u) == binomial_ppf(u, np.n, np.p);
+                }
+            }
+            check(regression_ok,
+                  "BinomialPpfTable::ppf() is unchanged by conditional_ppf_at_least_one/zero_mass "
+                  "(community regression)");
+        }
+    }
+
+    // ================================================================
     // Finite-output requirement across the Jones-relevant open-tail range,
     // for every transform, including very close to (0,1).
     // ================================================================

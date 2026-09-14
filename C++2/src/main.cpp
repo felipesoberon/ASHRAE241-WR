@@ -31,6 +31,15 @@ std::string program_name(int argc, char** argv) {
     return "ecai_cpp2";
 }
 
+// Console-only convenience marker (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md
+// Phase 6): lets a human running the executable see at a glance which
+// infector policy a run resolved to, without opening the CSV. Not part of
+// any Stage 13 document/schema.
+const char* infector_policy_name(ecai_cpp2::simulation::InfectorPolicy policy) {
+    return policy == ecai_cpp2::simulation::InfectorPolicy::risk_averse ? "risk_averse"
+                                                                        : "community";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -83,6 +92,7 @@ int main(int argc, char** argv) {
                       << "\" raw_mean_l_s_person=" << batch.summary.mean_l_s_person
                       << " ceiling_to_5_l_s_person=" << batch.summary.adjusted_ceiling_to_5_l_s_person;
         }
+        std::cout << " infector_policy=" << infector_policy_name(run.scenario.infector_policy);
         if (written.paths.summary_requested) std::cout << " summary_file=\"" << written.paths.summary_path << "\"";
         if (written.paths.replicates_requested) std::cout << " replicates_file=\"" << written.paths.replicates_path << "\"";
         std::cout << "\n";

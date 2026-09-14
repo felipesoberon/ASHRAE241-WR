@@ -158,3 +158,7 @@ Probability outputs are bounded to [0,1]. A value of 1.0 is permitted numerical 
 an error. Zero-infector outputs normalize to +0.0. Nonfinite intermediates are rejected, and
 rejected invocations produce no output. Verification currently passes 12/12 CTest plus 133 output
 checks.
+
+## Risk-averse verification
+
+Direct smoke runs verified both risk-averse ECAi and probability output paths: each exited 0, produced its versioned schema (`stage13-ra-v1` or `stage13-prob-ra-v1`), reported `NOT_APPLICABLE_RISK_AVERSE`, and produced no zero-infector rows. An invalid risk-averse `p=0` invocation exited nonzero and produced no files. The simulation-focused executable passed 292 checks and the full CTest suite passed 12/12. These checks verify implementation wiring and invariants, not independent scientific validation.

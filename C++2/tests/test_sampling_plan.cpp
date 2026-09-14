@@ -626,11 +626,17 @@ int main() {
 
     // ---------------------------------------------------------------
     // build_sampling_plan: max_bytes preflight must also account for the
-    // BinomialPpfTable's retained CDF buffer, not just the PMF buffer.
-    // N=1, I0=100 needs 16 bytes for the N-length vectors plus 2*808 bytes
-    // for the PMF and CDF buffers (1632-byte peak); max_bytes=1000 is above
-    // the PMF-only 824-byte figure but below the true peak, so this must
-    // throw std::runtime_error before any allocation.
+    // BinomialPpfTable's retained CDF buffer and its retained
+    // conditional-tail buffer, not just the transient PMF buffer -- all
+    // three (i0+1)-double buffers are simultaneously live by the end of the
+    // table's constructor, for every policy (docs/RISK_AVERSE_
+    // IMPLEMENTATION_PLAN.md Phase 4: "Update memory accounting for
+    // retained conditional-tail storage"). N=1, I0=100 needs 16 bytes for
+    // the N-length vectors plus 3*808 bytes for the PMF, CDF and
+    // conditional-tail buffers (2440-byte peak); max_bytes=1000 and
+    // max_bytes=2439 are both below the true peak and must throw
+    // std::runtime_error before any allocation, while max_bytes=2440
+    // succeeds exactly at the boundary.
     // ---------------------------------------------------------------
     {
         ResourcePolicy policy;
@@ -644,13 +650,25 @@ int main() {
             threw = true;
         }
         check(threw,
-              "build_sampling_plan: max_bytes preflight accounts for the binomial CDF buffer "
-              "(N=1,I0=100,p=.5,max_bytes=1000) and throws std::runtime_error before any "
-              "allocation");
-        policy.max_bytes = 1632;
+              "build_sampling_plan: max_bytes preflight accounts for the binomial CDF/"
+              "conditional-tail buffers (N=1,I0=100,p=.5,max_bytes=1000) and throws "
+              "std::runtime_error before any allocation");
+
+        policy.max_bytes = 2439;
+        threw = false;
+        try {
+            build_sampling_plan(seeds, config, 0, 1, 100, 0.5, policy);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw,
+              "build_sampling_plan: max_bytes one byte below the true 16N + 24(I0+1) peak still "
+              "throws std::runtime_error");
+
+        policy.max_bytes = 2440;
         const SamplingPlan plan = build_sampling_plan(seeds, config, 0, 1, 100, 0.5, policy);
         check(plan.n == 1 && plan.counts.size() == 1,
-              "build_sampling_plan: max_bytes exactly equal to the 16N + 16(I0+1) peak succeeds");
+              "build_sampling_plan: max_bytes exactly equal to the 16N + 24(I0+1) peak succeeds");
     }
 
     // ---------------------------------------------------------------
@@ -698,6 +716,429 @@ int main() {
         check(threw,
               "build_sampling_plan: I0 exceeding the binomial_ppf PMF-buffer feasibility bound "
               "throws std::runtime_error before any allocation");
+    }
+
+    // ===============================================================
+    // Phase 4 (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md): sampling-plan
+    // integration of the resolved infector policy into build_sampling_plan,
+    // plus validate_plan_policy_context.
+    // ===============================================================
+    using ecai_cpp2::sampling_plan::InfectorPolicy;
+    using ecai_cpp2::sampling_plan::kConditionalPpfAlgorithmVersion;
+    using ecai_cpp2::sampling_plan::validate_plan_policy_context;
+
+    // ---------------------------------------------------------------
+    // Community regression: an explicit InfectorPolicy::community argument
+    // must reproduce exactly what the pre-Phase-4 default-argument call
+    // produces -- same counts, same accounting, same policy/provenance
+    // defaults, same count-stream invariants -- across several fixtures.
+    // ---------------------------------------------------------------
+    {
+        struct Case { std::size_t n; long long i0; double p; std::uint64_t replicate; };
+        const Case cases[] = {
+            {25, 10, 0.4, 0}, {40, 250, 0.0, 0}, {17, 9, 1.0, 0}, {13, 6, 0.35, 2},
+        };
+        bool regression_ok = true;
+        for (const Case& c : cases) {
+            const SamplingPlan implicit = build_sampling_plan(seeds, config, c.replicate, c.n,
+                                                                c.i0, c.p);
+            const SamplingPlan explicit_community = build_sampling_plan(
+                seeds, config, c.replicate, c.n, c.i0, c.p, ResourcePolicy{},
+                InfectorPolicy::community);
+            regression_ok = regression_ok && implicit.counts == explicit_community.counts &&
+                             implicit.n == explicit_community.n &&
+                             implicit.n_zero == explicit_community.n_zero &&
+                             implicit.n_active == explicit_community.n_active &&
+                             implicit.k_total == explicit_community.k_total &&
+                             implicit.susceptible_draws == explicit_community.susceptible_draws &&
+                             implicit.infector_draws == explicit_community.infector_draws;
+            regression_ok = regression_ok &&
+                             explicit_community.policy == InfectorPolicy::community &&
+                             explicit_community.infector_provenance.policy ==
+                                 InfectorPolicy::community &&
+                             explicit_community.infector_provenance.zero_mass == 0.0 &&
+                             !explicit_community.infector_provenance.zero_mass_rounded_to_zero &&
+                             !explicit_community.infector_provenance.zero_mass_rounded_to_one &&
+                             explicit_community.infector_provenance.conditional_ppf_algorithm_version
+                                 .empty() &&
+                             !explicit_community.infector_provenance.deterministic_branch_used;
+            regression_ok = regression_ok &&
+                             explicit_community.lhs_generated == c.n &&
+                             explicit_community.lhs_consumed == c.n;
+        }
+        check(regression_ok,
+              "build_sampling_plan: an explicit community policy is bit-for-bit and "
+              "accounting-identical to the pre-Phase-4 default-argument call, with every "
+              "provenance field at its unused default");
+    }
+
+    // ---------------------------------------------------------------
+    // Risk-averse: every count is in [1, I0], no zero-infector rows, and
+    // the plan carries the policy/provenance/count-stream fields.
+    // ---------------------------------------------------------------
+    {
+        const std::size_t n = 500;
+        const long long i0 = 12;
+        const double p = 0.2;
+        const SamplingPlan plan =
+            build_sampling_plan(seeds, config, 0, n, i0, p, ResourcePolicy{},
+                                 InfectorPolicy::risk_averse);
+
+        check(plan.policy == InfectorPolicy::risk_averse,
+              "build_sampling_plan: risk-averse plan records InfectorPolicy::risk_averse");
+        check(plan.counts.size() == n, "build_sampling_plan: risk-averse plan returns exactly n counts");
+
+        bool all_in_range = true;
+        bool no_zero = true;
+        for (long long c : plan.counts) {
+            if (c < 1 || c > i0) all_in_range = false;
+            if (c == 0) no_zero = false;
+        }
+        check(all_in_range, "build_sampling_plan: every risk-averse count is in [1, I0]");
+        check(no_zero, "build_sampling_plan: no risk-averse count is zero");
+        check(plan.n_zero == 0, "build_sampling_plan: risk-averse plan has n_zero == 0");
+        check(plan.n_active == plan.n,
+              "build_sampling_plan: risk-averse plan has every simulation active");
+        check(plan.k_total >= plan.n,
+              "build_sampling_plan: risk-averse plan has k_total >= n");
+
+        const CountSummary summary = summarize_counts(plan.counts);
+        check(summary.n_zero == plan.n_zero && summary.n_active == plan.n_active &&
+                  summary.k_total == plan.k_total,
+              "build_sampling_plan: risk-averse plan accounting matches summarize_counts");
+
+        check(plan.infector_provenance.policy == InfectorPolicy::risk_averse &&
+                  plan.infector_provenance.conditional_ppf_algorithm_version ==
+                      kConditionalPpfAlgorithmVersion &&
+                  !plan.infector_provenance.deterministic_branch_used,
+              "build_sampling_plan: risk-averse provenance records the policy and algorithm "
+              "version, with no deterministic/limiting branch for an ordinary (I0,p)");
+        check(plan.infector_provenance.zero_mass > 0.0 && plan.infector_provenance.zero_mass < 1.0,
+              "build_sampling_plan: risk-averse provenance's zero_mass is a genuine interior "
+              "cutoff for this ordinary (I0,p)");
+        check(!plan.infector_provenance.zero_mass_rounded_to_zero &&
+                  !plan.infector_provenance.zero_mass_rounded_to_one,
+              "build_sampling_plan: risk-averse provenance's zero_mass did not round to 0 or 1 "
+              "for this ordinary (I0,p)");
+    }
+
+    // ---------------------------------------------------------------
+    // Risk-averse: exact-N count-stream invariants (lhs_generated ==
+    // lhs_consumed == N), independent of counts.size(), across several
+    // (n, i0, p) fixtures.
+    // ---------------------------------------------------------------
+    {
+        struct Case { std::size_t n; long long i0; double p; };
+        const Case cases[] = {{1, 1, 1e-6}, {77, 3, 0.5}, {2000, 400, 0.01}, {50, 5, 1.0}};
+        bool invariants_ok = true;
+        for (const Case& c : cases) {
+            const SamplingPlan plan = build_sampling_plan(seeds, config, 1, c.n, c.i0, c.p,
+                                                            ResourcePolicy{},
+                                                            InfectorPolicy::risk_averse);
+            invariants_ok = invariants_ok && plan.lhs_generated == c.n &&
+                             plan.lhs_consumed == c.n && plan.counts.size() == c.n;
+        }
+        check(invariants_ok,
+              "build_sampling_plan: risk-averse plans satisfy lhs_generated == lhs_consumed == N "
+              "independent of counts.size(), across multiple fixtures");
+    }
+
+    // ---------------------------------------------------------------
+    // Risk-averse: p == 1 deterministic branch. Every count equals I0
+    // exactly, and provenance records the deterministic branch with
+    // zero_mass == 0.0 (not "rounded to zero": p == 1 is an exact point
+    // mass, short-circuited before any table access).
+    // ---------------------------------------------------------------
+    {
+        const std::size_t n = 30;
+        const long long i0 = 8;
+        const SamplingPlan plan = build_sampling_plan(seeds, config, 0, n, i0, 1.0,
+                                                        ResourcePolicy{},
+                                                        InfectorPolicy::risk_averse);
+        bool all_full = true;
+        for (long long c : plan.counts) {
+            if (c != i0) all_full = false;
+        }
+        check(all_full,
+              "build_sampling_plan: risk-averse p=1 yields every count == I0 deterministically");
+        check(plan.infector_provenance.zero_mass == 0.0 &&
+                  plan.infector_provenance.zero_mass_rounded_to_zero &&
+                  plan.infector_provenance.deterministic_branch_used,
+              "build_sampling_plan: risk-averse p=1 records zero_mass == 0.0 and the "
+              "deterministic-branch flag");
+    }
+
+    // ---------------------------------------------------------------
+    // Risk-averse: zero_mass-rounds-to-1 limiting branch. I0=1,
+    // p=denorm_min: pmf(0) = 1 - denorm_min rounds to exactly 1.0 in
+    // binary64 (denorm_min is far below the ulp of 1.0), so zero_mass()
+    // rounds to exactly 1.0 -- the same pinned fixture used in Phase 2's
+    // distributions tests. Every count must still be exactly 1 (the
+    // explicit limiting branch), never 0, and the limiting/deterministic
+    // flags must be set.
+    // ---------------------------------------------------------------
+    {
+        const std::size_t n = 20;
+        const long long i0 = 1;
+        const double p = std::numeric_limits<double>::denorm_min();
+        const SamplingPlan plan = build_sampling_plan(seeds, config, 0, n, i0, p,
+                                                        ResourcePolicy{},
+                                                        InfectorPolicy::risk_averse);
+        bool all_ones = true;
+        for (long long c : plan.counts) {
+            if (c != 1) all_ones = false;
+        }
+        check(all_ones,
+              "build_sampling_plan: the zero_mass-rounds-to-1 limiting branch yields exactly 1 "
+              "for every count, never 0");
+        check(plan.infector_provenance.zero_mass_rounded_to_one &&
+                  plan.infector_provenance.deterministic_branch_used &&
+                  !plan.infector_provenance.zero_mass_rounded_to_zero,
+              "build_sampling_plan: the zero_mass-rounds-to-1 case records the limiting/"
+              "deterministic flags without also claiming zero_mass rounded to zero");
+    }
+
+    // ---------------------------------------------------------------
+    // Matched count-stream property: community and risk-averse plans built
+    // from the identical (seeds, config, replicate, n, i0, p) tuple consume
+    // the identical count-stream uniforms (same seed, same StreamId, same
+    // list length), so every risk-averse count must be pointwise >= its
+    // matched community count. Rounded-tail ties (both policies mapping the
+    // same u to the same k, or the community k already at I0) are expected
+    // and accepted -- only a strict violation (risk-averse count lower than
+    // the matched community count) is a failure.
+    // ---------------------------------------------------------------
+    {
+        std::mt19937_64 rng(909090ULL);
+        bool pointwise_ok = true;
+        bool never_zero = true;
+        for (int trial = 0; trial < 25; ++trial) {
+            const std::size_t n = 20 + static_cast<std::size_t>(rng() % 200);
+            const long long i0 = 1 + static_cast<long long>(rng() % 30);
+            const double p = 0.01 + 0.9 * (static_cast<double>(rng() % 1000) / 1000.0);
+            const std::uint64_t replicate = rng() % 5;
+
+            const SamplingPlan community =
+                build_sampling_plan(seeds, config, replicate, n, i0, p, ResourcePolicy{},
+                                     InfectorPolicy::community);
+            const SamplingPlan risk_averse =
+                build_sampling_plan(seeds, config, replicate, n, i0, p, ResourcePolicy{},
+                                     InfectorPolicy::risk_averse);
+            pointwise_ok = pointwise_ok && community.counts.size() == risk_averse.counts.size();
+            for (std::size_t i = 0; pointwise_ok && i < community.counts.size(); ++i) {
+                if (risk_averse.counts[i] < community.counts[i]) pointwise_ok = false;
+                if (risk_averse.counts[i] == 0) never_zero = false;
+            }
+        }
+        check(pointwise_ok,
+              "build_sampling_plan: over 25 randomized fixtures, every risk-averse count is no "
+              "lower than its matched community count from the identical count-stream uniforms");
+        check(never_zero, "build_sampling_plan: no risk-averse count is ever zero across the "
+                           "same randomized fixtures");
+    }
+
+    // ---------------------------------------------------------------
+    // Risk-averse: bank sizing uses the realized positive counts, and a
+    // risk-averse plan feeds compute_bank_budget/build_parameter_banks
+    // exactly like any other internally-consistent plan (n_active == n).
+    // ---------------------------------------------------------------
+    {
+        using ecai_cpp2::sampling_plan::compute_bank_budget;
+        const std::size_t n = 15;
+        const long long i0 = 5;
+        const double p = 0.5;
+        const SamplingPlan plan = build_sampling_plan(seeds, config, 3, n, i0, p, ResourcePolicy{},
+                                                        InfectorPolicy::risk_averse);
+        const auto budget = compute_bank_budget(plan.n, plan.n_active, plan.k_total);
+        check(budget.total_elements == plan.n + 3 * plan.n_active + 8 * plan.k_total,
+              "build_sampling_plan: a risk-averse plan's accounting feeds compute_bank_budget "
+              "without triggering its N_active/K_total consistency guards");
+    }
+
+    // ---------------------------------------------------------------
+    // Determinism: repeat construction with the same seed/config/replicate/
+    // n/i0/p/policy tuple is identical, for both policies.
+    // ---------------------------------------------------------------
+    {
+        const SamplingPlan a = build_sampling_plan(seeds, config, 6, 40, 10, 0.3, ResourcePolicy{},
+                                                     InfectorPolicy::risk_averse);
+        const SamplingPlan b = build_sampling_plan(seeds, config, 6, 40, 10, 0.3, ResourcePolicy{},
+                                                     InfectorPolicy::risk_averse);
+        check(a.counts == b.counts && a.n_zero == b.n_zero && a.n_active == b.n_active &&
+                  a.k_total == b.k_total && a.lhs_generated == b.lhs_generated &&
+                  a.lhs_consumed == b.lhs_consumed,
+              "build_sampling_plan: identical risk-averse tuples reproduce bit-for-bit identical "
+              "plans, including count-stream invariants");
+    }
+
+    // ---------------------------------------------------------------
+    // Invalid direct-call inputs, bypassing any CLI/scenario layer.
+    // ---------------------------------------------------------------
+    {
+        bool threw = false;
+        try {
+            build_sampling_plan(seeds, config, 0, 10, 0, 0.5, ResourcePolicy{},
+                                 InfectorPolicy::risk_averse);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw, "build_sampling_plan: risk-averse with i0 == 0 throws std::invalid_argument");
+    }
+    {
+        bool threw = false;
+        try {
+            build_sampling_plan(seeds, config, 0, 10, 5, 0.0, ResourcePolicy{},
+                                 InfectorPolicy::risk_averse);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw, "build_sampling_plan: risk-averse with p == 0 throws std::invalid_argument");
+    }
+    {
+        bool threw = false;
+        try {
+            build_sampling_plan(seeds, config, 0, 10, 5, -0.1, ResourcePolicy{},
+                                 InfectorPolicy::risk_averse);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw,
+              "build_sampling_plan: risk-averse with negative p throws std::invalid_argument "
+              "(same domain check as community)");
+    }
+    {
+        // p == 0 remains valid under the community default: this is the
+        // policy-specific check firing only for risk_averse, not a general
+        // p == 0 rejection.
+        const SamplingPlan plan = build_sampling_plan(seeds, config, 0, 10, 5, 0.0);
+        check(plan.n_zero == plan.n,
+              "build_sampling_plan: p == 0 remains valid and yields all-zero counts under the "
+              "community default");
+    }
+    {
+        bool threw = false;
+        try {
+            build_sampling_plan(seeds, config, 0, 10, 5, 0.5,
+                                 ResourcePolicy{},
+                                 static_cast<InfectorPolicy>(99));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw,
+              "build_sampling_plan: an unknown InfectorPolicy value throws std::invalid_argument");
+    }
+
+    // ---------------------------------------------------------------
+    // validate_plan_policy_context: agreement, mismatch, and risk-averse
+    // invariant violations.
+    // ---------------------------------------------------------------
+    {
+        const SamplingPlan community_plan = build_sampling_plan(seeds, config, 0, 20, 5, 0.3);
+        bool threw = false;
+        try {
+            validate_plan_policy_context(community_plan, InfectorPolicy::community);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        check(!threw,
+              "validate_plan_policy_context: a community plan validated against community "
+              "succeeds");
+
+        threw = false;
+        try {
+            validate_plan_policy_context(community_plan, InfectorPolicy::risk_averse);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw,
+              "validate_plan_policy_context: a community plan checked against an expected "
+              "risk-averse policy is rejected as std::invalid_argument");
+
+        const SamplingPlan risk_averse_plan = build_sampling_plan(
+            seeds, config, 0, 20, 5, 0.3, ResourcePolicy{}, InfectorPolicy::risk_averse);
+        threw = false;
+        try {
+            validate_plan_policy_context(risk_averse_plan, InfectorPolicy::risk_averse);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        check(!threw,
+              "validate_plan_policy_context: a risk-averse plan validated against risk-averse "
+              "succeeds");
+
+        threw = false;
+        try {
+            validate_plan_policy_context(risk_averse_plan, InfectorPolicy::community);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw,
+              "validate_plan_policy_context: a risk-averse plan checked against an expected "
+              "community policy is rejected as std::invalid_argument");
+
+        // Tampered plan: policy claims risk_averse but a zero-infector row
+        // is smuggled in.
+        {
+            SamplingPlan tampered = risk_averse_plan;
+            tampered.counts[0] = 0;
+            const CountSummary summary = summarize_counts(tampered.counts);
+            tampered.n_zero = summary.n_zero;
+            tampered.n_active = summary.n_active;
+            tampered.k_total = summary.k_total;
+            tampered.susceptible_draws = summary.n_active;
+            tampered.infector_draws = summary.k_total;
+            threw = false;
+            try {
+                validate_plan_policy_context(tampered, InfectorPolicy::risk_averse);
+            } catch (const std::invalid_argument&) {
+                threw = true;
+            }
+            check(threw,
+                  "validate_plan_policy_context: a risk-averse plan smuggling in a "
+                  "zero-infector row is rejected as std::invalid_argument");
+        }
+
+        // Unknown expected policy.
+        threw = false;
+        try {
+            validate_plan_policy_context(community_plan, static_cast<InfectorPolicy>(42));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw,
+              "validate_plan_policy_context: an unknown expected InfectorPolicy throws "
+              "std::invalid_argument");
+
+        // An inconsistent plan (accounting disagreeing with its own counts)
+        // is rejected before the policy-specific checks even run.
+        {
+            SamplingPlan bad = community_plan;
+            bad.k_total = 99999;
+            threw = false;
+            try {
+                validate_plan_policy_context(bad, InfectorPolicy::community);
+            } catch (const std::invalid_argument&) {
+                threw = true;
+            }
+            check(threw,
+                  "validate_plan_policy_context: a plan whose accounting disagrees with its own "
+                  "counts is rejected as std::invalid_argument");
+        }
+
+        // A resource-ceiling overrun surfaces through compute_bank_budget.
+        {
+            ResourcePolicy tight;
+            tight.max_total_infectors = 1;
+            threw = false;
+            try {
+                validate_plan_policy_context(risk_averse_plan, InfectorPolicy::risk_averse, tight);
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            check(threw,
+                  "validate_plan_policy_context: a tightened ResourcePolicy ceiling propagates "
+                  "compute_bank_budget's std::runtime_error");
+        }
     }
 
     // ===============================================================

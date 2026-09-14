@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "model.h"
+#include "sampling_plan.h"
 #include "seed_manager.h"
 
 #ifndef ECAI_CPP2_PROTECTED_LEGACY_TREE
@@ -248,6 +249,136 @@ std::vector<std::string> probability_replicate_header() {
             "replicate_csv_row_count"};
 }
 
+// Locates `name` in `columns`, used only by the risk-averse validators below
+// so their row-count/invariant checks read by column name rather than a
+// magic index that would silently drift if a risk-averse header gains or
+// loses a field. The two legacy validators above predate this helper and are
+// left untouched (their magic indices are already frozen/regression-tested).
+std::size_t column_index(const std::vector<std::string>& columns, const std::string& name) {
+    const auto it = std::find(columns.begin(), columns.end(), name);
+    require(it != columns.end(), "missing column " + name);
+    return static_cast<std::size_t>(std::distance(columns.begin(), it));
+}
+
+// Risk-averse ECAi summary schema, 96 ordered columns
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6). Identical to
+// summary_header() except: "zero_infector_policy" is replaced by
+// "infector_policy" (always "risk_averse") immediately followed by five new
+// provenance columns (zero_mass, zero_mass_rounded_to_zero,
+// zero_mass_rounded_to_one, conditional_ppf_algorithm_version,
+// deterministic_branch_used); "all_replicates_min_infector_count" is inserted
+// after "all_replicates_k_total"; and "explicit_infector_policy" is appended
+// at the end. The population comparator columns are retained for schema
+// stability but are always blank/NOT_APPLICABLE_RISK_AVERSE in a risk-averse
+// row (see build_risk_averse_document).
+std::vector<std::string> risk_averse_summary_header() {
+    return {
+        "schema_version", "model_version", "sampling_design_version", "category", "group",
+        "is_health_care_group", "source_i0", "source_volume_m3",
+        "source_probability_susceptible_present", "source_people_outdoor_airflow_l_s_person",
+        "source_area_outdoor_airflow_l_s_m2", "source_baseline_outdoor_airflow_l_s_person",
+        "source_community_rate", "source_mask_efficiency", "source_pbr_gm_m3_h",
+        "source_pbr_gsd", "source_activity_breathing_pct", "source_activity_talking_pct",
+        "source_activity_vocalizing_pct", "source_cdrop_gm_e4_per_m3", "source_cdrop_gsd",
+        "source_d_gm_e6_m", "source_d_gsd", "source_published_ecai_l_s_person",
+        "source_published_rr", "effective_i0", "effective_volume_m3",
+        "effective_community_rate", "effective_mask_efficiency", "target_probability",
+        "duration_hours", "target_probability_over_duration", "simulations_n", "replicates_r",
+        "percentile", "confidence_level", "base_seed", "seed_policy_version",
+        "infector_policy", "zero_mass", "zero_mass_rounded_to_zero", "zero_mass_rounded_to_one",
+        "conditional_ppf_algorithm_version", "deterministic_branch_used",
+        "negative_clamping_policy", "custom_scenario", "comparator_eligible",
+        "published_comparator_l_s_person", "comparator_signed_difference_l_s_person",
+        "comparator_abs_difference_l_s_person", "comparator_status", "dispersion_status",
+        "raw_mean_l_s_person", "raw_degrees_of_freedom", "raw_sd_l_s_person", "raw_se_l_s_person",
+        "raw_t_critical", "raw_ci_lower_l_s_person", "raw_ci_upper_l_s_person",
+        "raw_min_l_s_person", "raw_max_l_s_person", "ceiling_to_5_l_s_person",
+        "summary_row_count", "replicate_csv_row_count", "all_replicates_n",
+        "all_replicates_zero_infector_count", "all_replicates_active_count",
+        "all_replicates_k_total", "all_replicates_min_infector_count",
+        "all_replicates_negative_clamp_count", "all_replicates_output_zero_count",
+        "all_replicates_qer_evaluations", "all_replicates_ecai_evaluations",
+        "all_replicates_susceptible_values_consumed",
+        "all_replicates_infector_values_consumed", "counters_reconcile",
+        "all_cursors_exhausted", "all_replicates_finite", "banks_reconcile",
+        "explicit_category", "explicit_simulations", "explicit_replicates", "explicit_percentile",
+        "explicit_confidence", "explicit_target_probability", "explicit_duration",
+        "explicit_base_seed", "explicit_community_rate", "explicit_occupants", "explicit_volume_m3",
+        "explicit_mask_efficiency", "explicit_output_directory", "explicit_summary_file",
+        "explicit_replicates_file", "explicit_write_replicates", "explicit_infector_policy"};
+}
+
+// Risk-averse ECAi replicate schema, 21 ordered columns. Identical to
+// replicate_header() except "infector_policy" is inserted after
+// "replicate_index" and "min_infector_count" (the minimum realized infector
+// count in this replicate; always >= 1) is inserted after "k_total".
+std::vector<std::string> risk_averse_replicate_header() {
+    return {"replicate_index", "infector_policy", "requested_percentile",
+            "raw_percentile_l_s_person", "n", "zero_infector_count", "active_count", "k_total",
+            "min_infector_count", "negative_clamp_count", "output_zero_count", "qer_evaluations",
+            "ecai_evaluations", "susceptible_values_consumed", "infector_values_consumed",
+            "planned_bank_lengths", "final_cursors", "counters_reconcile", "cursors_exhausted",
+            "finite_values", "replicate_csv_row_count"};
+}
+
+// Risk-averse probability summary schema, 103 ordered columns. Identical to
+// probability_summary_header() except: "zero_infector_policy" is replaced by
+// "infector_policy" (always "risk_averse") immediately followed by the same
+// five provenance columns as risk_averse_summary_header() above;
+// "all_replicates_min_infector_count" is inserted after
+// "all_replicates_k_total"; and "explicit_infector_policy" is appended at the
+// very end (after "explicit_input_ecai").
+std::vector<std::string> risk_averse_probability_summary_header() {
+    return {
+        "schema_version", "model_version", "sampling_design_version", "mode", "category",
+        "group", "is_health_care_group", "source_i0", "source_volume_m3",
+        "source_probability_susceptible_present", "source_people_outdoor_airflow_l_s_person",
+        "source_area_outdoor_airflow_l_s_m2", "source_baseline_outdoor_airflow_l_s_person",
+        "source_community_rate", "source_mask_efficiency", "source_pbr_gm_m3_h",
+        "source_pbr_gsd", "source_activity_breathing_pct", "source_activity_talking_pct",
+        "source_activity_vocalizing_pct", "source_cdrop_gm_e4_per_m3", "source_cdrop_gsd",
+        "source_d_gm_e6_m", "source_d_gsd", "source_published_ecai_l_s_person",
+        "source_published_rr", "effective_i0", "effective_volume_m3",
+        "effective_community_rate", "effective_mask_efficiency", "input_ecai_l_s_person",
+        "input_ecai_source", "effective_eca_total_m3_h", "target_probability",
+        "duration_hours", "target_probability_over_duration", "simulations_n", "replicates_r",
+        "percentile", "confidence_level", "base_seed", "seed_policy_version",
+        "infector_policy", "zero_mass", "zero_mass_rounded_to_zero", "zero_mass_rounded_to_one",
+        "conditional_ppf_algorithm_version", "deterministic_branch_used",
+        "probability_policy", "saturation_policy", "custom_scenario",
+        "comparator_eligible", "comparator_target_probability", "comparator_signed_difference",
+        "comparator_ratio", "comparator_status", "dispersion_status", "raw_mean_probability",
+        "raw_degrees_of_freedom", "raw_sd_probability", "raw_se_probability", "raw_t_critical",
+        "raw_ci_lower_probability", "raw_ci_upper_probability", "raw_min_probability",
+        "raw_max_probability", "summary_row_count", "replicate_csv_row_count",
+        "all_replicates_n", "all_replicates_zero_infector_count", "all_replicates_active_count",
+        "all_replicates_k_total", "all_replicates_min_infector_count",
+        "all_replicates_output_zero_count",
+        "all_replicates_saturated_count", "all_replicates_qer_evaluations",
+        "all_replicates_probability_evaluations", "all_replicates_susceptible_values_consumed",
+        "all_replicates_infector_values_consumed", "counters_reconcile", "all_cursors_exhausted",
+        "all_replicates_finite", "banks_reconcile",
+        "banks_reconcile", "explicit_category", "explicit_simulations", "explicit_replicates",
+        "explicit_percentile", "explicit_confidence", "explicit_target_probability",
+        "explicit_duration", "explicit_base_seed", "explicit_community_rate",
+        "explicit_occupants", "explicit_volume_m3", "explicit_mask_efficiency",
+        "explicit_output_directory", "explicit_summary_file", "explicit_replicates_file",
+        "explicit_write_replicates", "explicit_mode", "explicit_input_ecai",
+        "explicit_infector_policy"};
+}
+
+// Risk-averse probability replicate schema, 22 ordered columns. Identical to
+// probability_replicate_header() except "infector_policy" is inserted after
+// "replicate_index" and "min_infector_count" is inserted after "k_total".
+std::vector<std::string> risk_averse_probability_replicate_header() {
+    return {"replicate_index", "infector_policy", "mode", "requested_percentile",
+            "raw_percentile_probability", "n", "zero_infector_count", "active_count", "k_total",
+            "min_infector_count", "saturated_count", "output_zero_count", "qer_evaluations",
+            "probability_evaluations", "susceptible_values_consumed", "infector_values_consumed",
+            "planned_bank_lengths", "final_cursors", "counters_reconcile", "cursors_exhausted",
+            "finite_values", "replicate_csv_row_count"};
+}
+
 void validate_probability_stage13_document(const OutputDocument& document) {
     const std::vector<std::string> expected_summary = probability_summary_header();
     const std::vector<std::string> expected_replicates = probability_replicate_header();
@@ -270,6 +401,88 @@ void validate_probability_stage13_document(const OutputDocument& document) {
     }
 }
 
+// Shared row-count/header-shape validation for either risk-averse schema
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6): both are structurally
+// identical to their community counterpart's row-count contract (exactly one
+// summary row, "summary_row_count" == "1", "replicates_r" ==
+// "replicate_csv_row_count" == the actual replicate row count, and every
+// replicate row echoes that same count), located by column name rather than
+// a duplicated magic index per schema.
+void validate_risk_averse_row_counts(const OutputDocument& document) {
+    validate_document(document);
+    require(document.summary_rows.size() == 1, "summary must contain exactly one row");
+    const auto& summary = document.summary_rows[0];
+    require(summary[column_index(document.summary_columns, "summary_row_count")] == "1",
+            "summary_row_count metadata must equal one");
+    const std::size_t requested_replicates = parse_size(
+        summary[column_index(document.summary_columns, "replicates_r")], "replicates_r");
+    const std::size_t declared_replicates = parse_size(
+        summary[column_index(document.summary_columns, "replicate_csv_row_count")],
+        "replicate_csv_row_count");
+    require(document.replicate_rows.size() == requested_replicates &&
+                document.replicate_rows.size() == declared_replicates,
+            "risk-averse replicate rows disagree with summary replicate count metadata");
+    const std::size_t replicate_count_column =
+        column_index(document.replicate_columns, "replicate_csv_row_count");
+    for (const auto& row : document.replicate_rows) {
+        require(parse_size(row[replicate_count_column], "replicate row count") ==
+                    document.replicate_rows.size(),
+                "risk-averse replicate row-count metadata mismatch");
+    }
+}
+
+// Shared risk-averse invariant validation, readable directly from a
+// document's own summary columns (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md
+// Phase 6: "Risk-averse documents must assert zero_infector_count == 0,
+// active_count == n, k_total >= n, and min(infector_counts) >= 1"). This is a
+// document-level (aggregate) re-check: the authoritative, per-replicate
+// enforcement of the same invariants against real ReplicateCounters happens
+// in build_risk_averse_document / build_risk_averse_probability_document
+// before any row is ever written into the document validated here.
+void validate_risk_averse_invariants(const OutputDocument& document) {
+    const auto& summary = document.summary_rows[0];
+    const auto field = [&](const char* name) -> const std::string& {
+        return summary[column_index(document.summary_columns, name)];
+    };
+    require(field("infector_policy") == "risk_averse",
+            "risk-averse document must carry the risk_averse infector policy marker");
+    require(field("comparator_eligible") == "false",
+            "risk-averse document must report comparator_eligible=false");
+    require(field("comparator_status") == "NOT_APPLICABLE_RISK_AVERSE",
+            "risk-averse document must suppress the population comparator");
+    require(field("all_replicates_zero_infector_count") == "0",
+            "risk-averse document must report zero aggregate zero-infector rows");
+    const std::size_t n_total = parse_size(field("all_replicates_n"), "all_replicates_n");
+    const std::size_t active_total =
+        parse_size(field("all_replicates_active_count"), "all_replicates_active_count");
+    require(active_total == n_total,
+            "risk-averse aggregate active count must equal aggregate N");
+    const std::size_t k_total = parse_size(field("all_replicates_k_total"), "all_replicates_k_total");
+    require(k_total >= n_total, "risk-averse aggregate K_total must be at least aggregate N");
+    const std::size_t min_infector_count =
+        parse_size(field("all_replicates_min_infector_count"), "all_replicates_min_infector_count");
+    require(min_infector_count >= 1,
+            "risk-averse aggregate minimum infector count must be at least 1");
+}
+
+void validate_risk_averse_stage13_document(const OutputDocument& document) {
+    require(document.summary_columns == risk_averse_summary_header(),
+            "risk-averse summary schema is not the authoritative Stage 13 header");
+    require(document.replicate_columns == risk_averse_replicate_header(),
+            "risk-averse replicate schema is not the authoritative Stage 13 header");
+    validate_risk_averse_row_counts(document);
+    validate_risk_averse_invariants(document);
+}
+
+void validate_risk_averse_probability_stage13_document(const OutputDocument& document) {
+    require(document.summary_columns == risk_averse_probability_summary_header(),
+            "risk-averse probability summary schema is not the authoritative Stage 13 header");
+    require(document.replicate_columns == risk_averse_probability_replicate_header(),
+            "risk-averse probability replicate schema is not the authoritative Stage 13 header");
+    validate_risk_averse_row_counts(document);
+    validate_risk_averse_invariants(document);
+}
+
 void validate_stage13_document(const OutputDocument& document) {
     require(document.summary_rows.size() == 1, "summary must contain exactly one row");
     require(!document.summary_columns.empty() && document.summary_columns[0] == "schema_version" &&
@@ -277,6 +490,14 @@ void validate_stage13_document(const OutputDocument& document) {
             "summary schema missing a leading schema_version column/value");
     if (document.summary_rows[0][0] == kProbabilitySchemaVersion) {
         validate_probability_stage13_document(document);
+        return;
+    }
+    if (document.summary_rows[0][0] == kRiskAverseSchemaVersion) {
+        validate_risk_averse_stage13_document(document);
+        return;
+    }
+    if (document.summary_rows[0][0] == kRiskAverseProbabilitySchemaVersion) {
+        validate_risk_averse_probability_stage13_document(document);
         return;
     }
 
@@ -372,7 +593,10 @@ void require_same_run(const cli::ResolvedRun& supplied, const cli::ResolvedRun& 
                               authoritative.overrides.community_infection_rate) &&
                 supplied.overrides.mode == authoritative.overrides.mode &&
                 same_optional(supplied.overrides.input_ecai_l_s_person,
-                              authoritative.overrides.input_ecai_l_s_person),
+                              authoritative.overrides.input_ecai_l_s_person) &&
+                supplied.overrides.infector_policy == authoritative.overrides.infector_policy &&
+                supplied.overrides.infector_policy_explicit ==
+                    authoritative.overrides.infector_policy_explicit,
             "resolved overrides disagree with CLI options");
     const auto& ls = supplied.scenario;
     const auto& rs = authoritative.scenario;
@@ -389,7 +613,9 @@ void require_same_run(const cli::ResolvedRun& supplied, const cli::ResolvedRun& 
                 ls.community_infection_rate_overridden == rs.community_infection_rate_overridden &&
                 ls.custom_scenario == rs.custom_scenario && ls.mode == rs.mode &&
                 same_double(ls.input_ecai_l_s_person, rs.input_ecai_l_s_person) &&
-                ls.input_ecai_overridden == rs.input_ecai_overridden,
+                ls.input_ecai_overridden == rs.input_ecai_overridden &&
+                ls.infector_policy == rs.infector_policy &&
+                ls.infector_policy_explicit == rs.infector_policy_explicit,
             "resolved effective scenario disagrees with CLI options");
     require(supplied.base_seed == authoritative.base_seed &&
                 supplied.custom_scenario == authoritative.custom_scenario &&
@@ -468,11 +694,30 @@ std::string serialize_replicates_csv(const OutputDocument& document) {
 OutputDocument build_probability_document(const cli::ResolvedRun& run,
                                           const simulation::ReplicateBatch& batch,
                                           const cli::CliOptions& options);
+OutputDocument build_risk_averse_document(const cli::ResolvedRun& run,
+                                          const simulation::ReplicateBatch& batch,
+                                          const cli::CliOptions& options);
+OutputDocument build_risk_averse_probability_document(const cli::ResolvedRun& run,
+                                                       const simulation::ReplicateBatch& batch,
+                                                       const cli::CliOptions& options);
 
 OutputDocument build_document(const cli::ResolvedRun& run,
                               const simulation::ReplicateBatch& batch,
                               const cli::CliOptions& options,
                               const std::string&) {
+    // Infector policy is dispatched independently of output mode
+    // (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6): a risk-averse run
+    // never falls through to the two community builders below, in either
+    // mode, so the community/probability schemas and their serialized bytes
+    // are completely unaffected by this branch's existence.
+    if (run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse) {
+        if (run.scenario.mode == simulation::OutputMode::probability) {
+            return build_risk_averse_probability_document(run, batch, options);
+        }
+        require(run.overrides.mode == simulation::OutputMode::ecai,
+                "risk-averse ECAi document requested for a non-ECAi batch");
+        return build_risk_averse_document(run, batch, options);
+    }
     if (run.scenario.mode == simulation::OutputMode::probability) {
         return build_probability_document(run, batch, options);
     }
@@ -989,6 +1234,588 @@ OutputDocument build_probability_document(const cli::ResolvedRun& run,
             std::to_string(counters.active_count), std::to_string(counters.k_total),
             std::to_string(counters.saturated_count), std::to_string(counters.output_zero_count),
             std::to_string(counters.qer_evaluations),
+            std::to_string(counters.probability_evaluations),
+            std::to_string(counters.susceptible_values_consumed),
+            std::to_string(counters.infector_values_consumed),
+            bank_sizes(replicate.planned_bank_lengths), bank_sizes(replicate.final_cursors),
+            "true", "true", "true", std::to_string(batch.replicates.size())});
+    }
+    return document;
+}
+
+// Risk-averse ECAi document (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6).
+// Structurally parallel to build_document's community ECAi body above, with
+// three differences: every infector count is required in [1, I0] (never 0,
+// so the community zero-infector branch never fires), the Stage 6 sampling
+// plan is independently recomputed under InfectorPolicy::risk_averse from
+// the same (seeds, config, scenario) to obtain and cross-check the
+// zero_mass/limiting-branch provenance and to prove the plan agrees exactly
+// with the authoritative replicate infector counts, and the population
+// comparator is unconditionally suppressed.
+OutputDocument build_risk_averse_document(const cli::ResolvedRun& run,
+                                          const simulation::ReplicateBatch& batch,
+                                          const cli::CliOptions& options) {
+    const cli::ResolvedRun authoritative_run = cli::resolve_run(options);
+    require_same_run(run, authoritative_run);
+    require(run.category != nullptr, "null category");
+    const OccupancyCategory& category = *run.category;
+    const simulation::EffectiveScenario& scenario = run.scenario;
+
+    require(run.category == &lookup_occupancy_category(category.canonical_name),
+            "category pointer does not identify the canonical source record");
+    require(category.canonical_name == run.config.category_name &&
+                run.config.category_name == scenario.category_name,
+            "category/config/scenario disagreement");
+    require(run.overrides.infector_policy == simulation::InfectorPolicy::risk_averse &&
+                scenario.infector_policy == simulation::InfectorPolicy::risk_averse &&
+                options.infector_policy == simulation::InfectorPolicy::risk_averse &&
+                run.overrides.mode == simulation::OutputMode::ecai &&
+                scenario.mode == simulation::OutputMode::ecai &&
+                options.mode == simulation::OutputMode::ecai,
+            "build_risk_averse_document requires a risk-averse ECAi resolved run");
+    for (const simulation::ReplicateResult& replicate : batch.replicates) {
+        require(replicate.mode == simulation::OutputMode::ecai &&
+                    replicate.probability.empty() && replicate.percentile_probability == 0.0 &&
+                    replicate.counters.probability_evaluations == 0 &&
+                    replicate.counters.saturated_count == 0,
+                "risk-averse ECAi document requested for a non-ECAi batch");
+    }
+
+    const bool category_custom = options.occupants.has_value() || options.volume_m3.has_value() ||
+                                 options.mask_efficiency.has_value() ||
+                                 options.community_infection_rate.has_value();
+    require(run.custom_scenario == options.custom_scenario &&
+                scenario.custom_scenario == category_custom,
+            "scenario provenance disagreement");
+    require(run.base_seed == options.base_seed, "base-seed provenance disagreement");
+    require(run.overrides.occupants == options.occupants &&
+                run.overrides.volume_m3 == options.volume_m3 &&
+                run.overrides.mask_efficiency == options.mask_efficiency &&
+                run.overrides.community_infection_rate == options.community_infection_rate,
+            "override provenance disagreement");
+    require(scenario.occupants_overridden == options.occupants.has_value() &&
+                scenario.volume_overridden == options.volume_m3.has_value() &&
+                scenario.mask_efficiency_overridden == options.mask_efficiency.has_value() &&
+                scenario.community_infection_rate_overridden ==
+                    options.community_infection_rate.has_value(),
+            "per-field scenario provenance disagreement");
+    require(run.target_is_hourly == options.target_is_hourly &&
+                run.target_is_hourly == (scenario.duration_hours == 1.0) &&
+                run.config.i0 == scenario.occupants && run.config.volume_m3 == scenario.volume_m3 &&
+                run.config.mask_efficiency == scenario.mask_efficiency &&
+                run.config.community_infection_rate == scenario.community_infection_rate &&
+                run.config.simulations_n == scenario.simulations_n &&
+                run.config.simulations_n == options.simulations_n &&
+                run.config.replicates_r == options.replicates_r &&
+                run.config.target_probability == scenario.target_probability &&
+                run.config.target_probability == options.target_probability &&
+                run.config.duration_hours == scenario.duration_hours &&
+                run.config.duration_hours == options.duration_hours &&
+                run.config.percentile == scenario.percentile &&
+                run.config.percentile == options.percentile &&
+                run.config.confidence_level == options.confidence_level,
+            "configuration/statistics provenance disagreement");
+    require(batch.replicates.size() == options.replicates_r,
+            "batch replicate count disagrees with requested R");
+
+    const seed_manager::SeedManager seeds(run.base_seed);
+    sampling_plan::InfectorPolicyProvenance provenance;
+    long long overall_min_infector_count = 0;
+    std::array<std::size_t, 10> totals{};
+    std::vector<double> raw_percentiles;
+    raw_percentiles.reserve(batch.replicates.size());
+    for (std::size_t index = 0; index < batch.replicates.size(); ++index) {
+        const simulation::ReplicateResult& replicate = batch.replicates[index];
+        const simulation::ReplicateCounters& counters = replicate.counters;
+        require(replicate.replicate_index == index, "replicate identity/order mismatch");
+        require(replicate.infector_policy == simulation::InfectorPolicy::risk_averse,
+                "replicate did not resolve to the risk-averse infector policy");
+        require(same_double(replicate.percentile, scenario.percentile),
+                "replicate requested percentile mismatch");
+        require(counters.n == scenario.simulations_n,
+                "replicate counter N disagrees with effective N");
+        require(replicate.ecai_l_s_person.size() == scenario.simulations_n,
+                "replicate output count disagrees with effective N");
+        require(replicate.infector_counts.size() == scenario.simulations_n,
+                "replicate infector-count vector disagrees with effective N");
+
+        std::size_t grounded_active = 0;
+        std::size_t grounded_k_total = 0;
+        std::size_t zero_count = 0;
+        for (std::size_t row = 0; row < replicate.ecai_l_s_person.size(); ++row) {
+            const long long count = replicate.infector_counts[row];
+            const double value = replicate.ecai_l_s_person[row];
+            require(count >= 1 && count <= scenario.occupants,
+                    "risk-averse infector count lies outside [1, effective I0]");
+            grounded_active = checked_add(grounded_active, 1, "grounded active");
+            grounded_k_total = checked_add(grounded_k_total, static_cast<std::size_t>(count),
+                                           "grounded K_total");
+            require(std::isfinite(value), "replicate contains non-finite ECAi output");
+            require(value >= 0.0, "replicate contains negative ECAi output");
+            if (value == 0.0) zero_count = checked_add(zero_count, 1, "output zero");
+        }
+        require(counters.zero_infector_count == 0 && counters.active_count == counters.n &&
+                    counters.active_count == grounded_active && counters.k_total == grounded_k_total &&
+                    counters.k_total >= counters.n,
+                "risk-averse replicate counters violate the no-zero-infector invariant");
+        require(counters.output_zero_count == zero_count, "output zero count mismatch");
+        require(counters.negative_clamp_count <= counters.active_count,
+                "negative clamp count exceeds active count");
+        require(counters.output_zero_count >= counters.negative_clamp_count,
+                "output zero sources do not reconcile");
+        require(counters.qer_evaluations == counters.k_total,
+                "QER count disagrees with K_total");
+        require(counters.ecai_evaluations == counters.active_count,
+                "ECAi count disagrees with active count");
+        require(counters.susceptible_values_consumed ==
+                    checked_multiply(3, counters.active_count, "susceptible"),
+                "susceptible consumption mismatch");
+        require(counters.infector_values_consumed ==
+                    checked_multiply(8, counters.k_total, "infector"),
+                "infector consumption mismatch");
+        for (std::size_t bank = 0; bank < 11; ++bank) {
+            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
+            require(replicate.planned_bank_lengths[bank] == expected,
+                    "planned bank length mismatch");
+            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
+            require(replicate.bank_generated[bank] == (expected > 0),
+                    "generated-bank flag mismatch");
+        }
+        require(replicate.cursors_exhausted, "replicate cursors are not exhausted");
+        const double percentile =
+            simulation::percentile_linear(replicate.ecai_l_s_person, scenario.percentile);
+        require(same_double(replicate.percentile_l_s_person, percentile),
+                "stored replicate percentile mismatch");
+        raw_percentiles.push_back(percentile);
+
+        const long long row_min = *std::min_element(replicate.infector_counts.begin(),
+                                                     replicate.infector_counts.end());
+        require(row_min >= 1, "risk-averse replicate contains an infector count below 1");
+        overall_min_infector_count =
+            index == 0 ? row_min : std::min(overall_min_infector_count, row_min);
+
+        // Independently reproduces this replicate's Stage 6 plan (same seed,
+        // n, I0, p and policy as the batch that already ran -- see
+        // simulation::run_replicate) purely to recover and cross-check its
+        // zero_mass/limiting-branch provenance and to prove agreement with
+        // the authoritative infector counts already validated above.
+        const sampling_plan::SamplingPlan plan = sampling_plan::build_sampling_plan(
+            seeds, run.config, replicate.replicate_index, scenario.simulations_n,
+            scenario.occupants, scenario.community_infection_rate, sampling_plan::ResourcePolicy{},
+            sampling_plan::InfectorPolicy::risk_averse);
+        sampling_plan::validate_plan_policy_context(plan, sampling_plan::InfectorPolicy::risk_averse);
+        require(plan.counts == replicate.infector_counts,
+                "recomputed risk-averse sampling plan disagrees with the authoritative replicate "
+                "infector counts");
+        if (index == 0) {
+            provenance = plan.infector_provenance;
+        } else {
+            require(same_double(provenance.zero_mass, plan.infector_provenance.zero_mass) &&
+                        provenance.zero_mass_rounded_to_zero ==
+                            plan.infector_provenance.zero_mass_rounded_to_zero &&
+                        provenance.zero_mass_rounded_to_one ==
+                            plan.infector_provenance.zero_mass_rounded_to_one &&
+                        provenance.conditional_ppf_algorithm_version ==
+                            plan.infector_provenance.conditional_ppf_algorithm_version &&
+                        provenance.deterministic_branch_used ==
+                            plan.infector_provenance.deterministic_branch_used,
+                    "risk-averse provenance disagrees across replicates in the same batch");
+        }
+
+        totals[0] = checked_add(totals[0], counters.n, "n");
+        totals[1] = checked_add(totals[1], counters.zero_infector_count, "zero infector");
+        totals[2] = checked_add(totals[2], counters.active_count, "active");
+        totals[3] = checked_add(totals[3], counters.k_total, "K_total");
+        totals[4] = checked_add(totals[4], counters.negative_clamp_count, "negative clamp");
+        totals[5] = checked_add(totals[5], counters.output_zero_count, "output zero");
+        totals[6] = checked_add(totals[6], counters.qer_evaluations, "QER");
+        totals[7] = checked_add(totals[7], counters.ecai_evaluations, "ECAi");
+        totals[8] = checked_add(totals[8], counters.susceptible_values_consumed, "susceptible");
+        totals[9] = checked_add(totals[9], counters.infector_values_consumed, "infector");
+    }
+    require(provenance.policy == sampling_plan::InfectorPolicy::risk_averse,
+            "recomputed risk-averse plan provenance carries the wrong policy");
+    // p=1 provenance convention (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase
+    // 6): no CDF table exists, so zero_mass is stored as exactly 0.0 with the
+    // deterministic branch flag set.
+    if (scenario.community_infection_rate == 1.0) {
+        require(provenance.zero_mass == 0.0 && provenance.deterministic_branch_used,
+                "p=1 risk-averse provenance must record zero_mass=0.0 and the deterministic branch");
+    }
+
+    const statistics::ReplicateSummary authoritative =
+        statistics::summarize_replicates(raw_percentiles, options.confidence_level);
+    require_same_summary(batch.summary, authoritative);
+
+    const auto& q = authoritative;
+    const std::string dispersion_status =
+        q.dispersion_status == statistics::DispersionStatus::available
+            ? "AVAILABLE"
+            : "UNAVAILABLE_SINGLE_REPLICATE";
+    // Comparator precedence (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6):
+    // NOT_APPLICABLE_RISK_AVERSE wins over custom status unconditionally --
+    // the estimand mismatch is fundamental -- so every population-level
+    // comparator field stays blank regardless of run.custom_scenario.
+    std::vector<std::string> row = {
+        kRiskAverseSchemaVersion, kModelVersion, std::to_string(seed_manager::kDesignVersion),
+        category.canonical_name, category.group, boolean(category.is_health_care_group),
+        std::to_string(category.i0), format_double(category.volume_m3),
+        format_double(category.probability_susceptible_present),
+        format_double(category.people_outdoor_airflow_Lsp),
+        format_double(category.area_outdoor_airflow_Lsm2),
+        format_double(category.baseline_outdoor_airflow_Lsp),
+        format_double(category.community_infection_rate), format_double(category.mask_efficiency),
+        format_double(category.pbr_gm_m3h), format_double(category.pbr_gsd),
+        format_double(category.activity_breathing_pct), format_double(category.activity_talking_pct),
+        format_double(category.activity_vocalizing_pct), format_double(category.cdrop_gm_e4_per_m3),
+        format_double(category.cdrop_gsd), format_double(category.d_gm_e6_m),
+        format_double(category.d_gsd), format_double(category.published_ecai_Lsp),
+        format_double(category.published_rr), std::to_string(scenario.occupants),
+        format_double(scenario.volume_m3), format_double(scenario.community_infection_rate),
+        format_double(scenario.mask_efficiency), format_double(scenario.target_probability),
+        format_double(scenario.duration_hours),
+        scenario.duration_hours == 1.0 ? "hourly_target" : "target_over_selected_duration",
+        std::to_string(scenario.simulations_n), std::to_string(options.replicates_r),
+        format_double(scenario.percentile), format_double(options.confidence_level),
+        std::to_string(run.base_seed), seed_manager::kSeedPolicyVersion,
+        "risk_averse", format_double(provenance.zero_mass),
+        boolean(provenance.zero_mass_rounded_to_zero), boolean(provenance.zero_mass_rounded_to_one),
+        provenance.conditional_ppf_algorithm_version, boolean(provenance.deterministic_branch_used),
+        "negative_ecai_clamped_to_zero", boolean(run.custom_scenario), boolean(false),
+        std::string(), std::string(), std::string(), "NOT_APPLICABLE_RISK_AVERSE",
+        dispersion_status, format_double(q.mean_l_s_person),
+        format_optional(q.degrees_of_freedom), format_optional(q.sample_sd_l_s_person),
+        format_optional(q.standard_error_l_s_person), format_optional(q.t_critical),
+        format_optional(q.ci_lower_l_s_person), format_optional(q.ci_upper_l_s_person),
+        format_double(q.min_l_s_person), format_double(q.max_l_s_person),
+        format_double(q.adjusted_ceiling_to_5_l_s_person), "1",
+        std::to_string(batch.replicates.size()), std::to_string(totals[0]),
+        std::to_string(totals[1]), std::to_string(totals[2]), std::to_string(totals[3]),
+        std::to_string(overall_min_infector_count), std::to_string(totals[4]),
+        std::to_string(totals[5]), std::to_string(totals[6]), std::to_string(totals[7]),
+        std::to_string(totals[8]), std::to_string(totals[9]), "true", "true", "true", "true",
+        boolean(options.category_supplied), boolean(options.simulations_explicit),
+        boolean(options.replicates_explicit), boolean(options.percentile_explicit),
+        boolean(options.confidence_explicit), boolean(options.target_probability_explicit),
+        boolean(options.duration_explicit), boolean(options.base_seed_explicit),
+        boolean(options.community_infection_rate.has_value()),
+        boolean(options.occupants.has_value()), boolean(options.volume_m3.has_value()),
+        boolean(options.mask_efficiency.has_value()), boolean(options.output_directory.has_value()),
+        boolean(options.summary_file.has_value()), boolean(options.replicates_file.has_value()),
+        boolean(options.write_replicates), boolean(options.infector_policy_explicit)};
+
+    OutputDocument document;
+    document.summary_columns = risk_averse_summary_header();
+    require(document.summary_columns.size() == 96, "risk-averse summary schema width changed");
+    require(row.size() == document.summary_columns.size(),
+            "risk-averse summary schema construction mismatch");
+    document.summary_rows.push_back(std::move(row));
+    document.replicate_columns = risk_averse_replicate_header();
+    require(document.replicate_columns.size() == 21, "risk-averse replicate schema width changed");
+    for (const auto& replicate : batch.replicates) {
+        const auto& counters = replicate.counters;
+        const long long replicate_min = *std::min_element(replicate.infector_counts.begin(),
+                                                           replicate.infector_counts.end());
+        document.replicate_rows.push_back({
+            std::to_string(replicate.replicate_index), "risk_averse",
+            format_double(replicate.percentile), format_double(replicate.percentile_l_s_person),
+            std::to_string(counters.n), std::to_string(counters.zero_infector_count),
+            std::to_string(counters.active_count), std::to_string(counters.k_total),
+            std::to_string(replicate_min), std::to_string(counters.negative_clamp_count),
+            std::to_string(counters.output_zero_count), std::to_string(counters.qer_evaluations),
+            std::to_string(counters.ecai_evaluations),
+            std::to_string(counters.susceptible_values_consumed),
+            std::to_string(counters.infector_values_consumed),
+            bank_sizes(replicate.planned_bank_lengths), bank_sizes(replicate.final_cursors),
+            "true", "true", "true", std::to_string(batch.replicates.size())});
+    }
+    return document;
+}
+
+// Risk-averse probability document (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md
+// Phase 6). Structurally parallel to build_probability_document above, with
+// the same three differences described on build_risk_averse_document.
+OutputDocument build_risk_averse_probability_document(const cli::ResolvedRun& run,
+                                                       const simulation::ReplicateBatch& batch,
+                                                       const cli::CliOptions& options) {
+    const cli::ResolvedRun authoritative_run = cli::resolve_run(options);
+    require_same_run(run, authoritative_run);
+    require(run.category != nullptr, "null category");
+    const OccupancyCategory& category = *run.category;
+    const simulation::EffectiveScenario& scenario = run.scenario;
+
+    require(run.category == &lookup_occupancy_category(category.canonical_name),
+            "category pointer does not identify the canonical source record");
+    require(category.canonical_name == run.config.category_name &&
+                run.config.category_name == scenario.category_name,
+            "category/config/scenario disagreement");
+    require(run.overrides.mode == simulation::OutputMode::probability &&
+                scenario.mode == simulation::OutputMode::probability &&
+                options.mode == simulation::OutputMode::probability &&
+                run.overrides.infector_policy == simulation::InfectorPolicy::risk_averse &&
+                scenario.infector_policy == simulation::InfectorPolicy::risk_averse &&
+                options.infector_policy == simulation::InfectorPolicy::risk_averse,
+            "build_risk_averse_probability_document requires a risk-averse probability-mode "
+            "resolved run");
+    const bool category_custom = options.occupants.has_value() || options.volume_m3.has_value() ||
+                                 options.mask_efficiency.has_value() ||
+                                 options.community_infection_rate.has_value();
+    require(run.custom_scenario == options.custom_scenario &&
+                scenario.custom_scenario == category_custom,
+            "scenario provenance disagreement");
+    require(run.base_seed == options.base_seed, "base-seed provenance disagreement");
+    require(run.overrides.occupants == options.occupants &&
+                run.overrides.volume_m3 == options.volume_m3 &&
+                run.overrides.mask_efficiency == options.mask_efficiency &&
+                run.overrides.community_infection_rate == options.community_infection_rate,
+            "override provenance disagreement");
+    require(scenario.occupants_overridden == options.occupants.has_value() &&
+                scenario.volume_overridden == options.volume_m3.has_value() &&
+                scenario.mask_efficiency_overridden == options.mask_efficiency.has_value() &&
+                scenario.community_infection_rate_overridden ==
+                    options.community_infection_rate.has_value(),
+            "per-field scenario provenance disagreement");
+    require(scenario.input_ecai_overridden == options.input_ecai_l_s_person.has_value(),
+            "input ECAi provenance disagreement");
+    require(same_optional(run.overrides.input_ecai_l_s_person, options.input_ecai_l_s_person),
+            "input ECAi override disagreement");
+    require(run.target_is_hourly == options.target_is_hourly &&
+                run.target_is_hourly == (scenario.duration_hours == 1.0) &&
+                run.config.i0 == scenario.occupants && run.config.volume_m3 == scenario.volume_m3 &&
+                run.config.mask_efficiency == scenario.mask_efficiency &&
+                run.config.community_infection_rate == scenario.community_infection_rate &&
+                run.config.simulations_n == scenario.simulations_n &&
+                run.config.simulations_n == options.simulations_n &&
+                run.config.replicates_r == options.replicates_r &&
+                run.config.target_probability == scenario.target_probability &&
+                run.config.target_probability == options.target_probability &&
+                run.config.duration_hours == scenario.duration_hours &&
+                run.config.duration_hours == options.duration_hours &&
+                run.config.percentile == scenario.percentile &&
+                run.config.percentile == options.percentile &&
+                run.config.confidence_level == options.confidence_level,
+            "configuration/statistics provenance disagreement");
+    require(batch.replicates.size() == options.replicates_r,
+            "batch replicate count disagrees with requested R");
+
+    const seed_manager::SeedManager seeds(run.base_seed);
+    sampling_plan::InfectorPolicyProvenance provenance;
+    long long overall_min_infector_count = 0;
+    std::array<std::size_t, 10> totals{};
+    std::vector<double> raw_percentiles;
+    raw_percentiles.reserve(batch.replicates.size());
+    for (std::size_t index = 0; index < batch.replicates.size(); ++index) {
+        const simulation::ReplicateResult& replicate = batch.replicates[index];
+        const simulation::ReplicateCounters& counters = replicate.counters;
+        require(replicate.replicate_index == index, "replicate identity/order mismatch");
+        require(replicate.mode == simulation::OutputMode::probability,
+                "replicate did not resolve to probability mode");
+        require(replicate.infector_policy == simulation::InfectorPolicy::risk_averse,
+                "replicate did not resolve to the risk-averse infector policy");
+        require(same_double(replicate.percentile, scenario.percentile),
+                "replicate requested percentile mismatch");
+        require(counters.n == scenario.simulations_n,
+                "replicate counter N disagrees with effective N");
+        require(replicate.ecai_l_s_person.empty(),
+                "probability-mode replicate must not carry ECAi-mode output");
+        require(replicate.percentile_l_s_person == 0.0,
+                "probability-mode replicate must not carry an ECAi-mode percentile");
+        require(counters.negative_clamp_count == 0,
+                "probability-mode replicate must not carry ECAi-mode negative clamps");
+        require(counters.ecai_evaluations == 0,
+                "probability-mode replicate must not carry ECAi-mode evaluation counts");
+        require(replicate.probability.size() == scenario.simulations_n,
+                "replicate output count disagrees with effective N");
+        require(replicate.infector_counts.size() == scenario.simulations_n,
+                "replicate infector-count vector disagrees with effective N");
+
+        std::size_t grounded_active = 0;
+        std::size_t grounded_k_total = 0;
+        std::size_t zero_output_count = 0;
+        std::size_t saturated_count = 0;
+        for (std::size_t row = 0; row < replicate.probability.size(); ++row) {
+            const long long count = replicate.infector_counts[row];
+            const double value = replicate.probability[row];
+            require(count >= 1 && count <= scenario.occupants,
+                    "risk-averse infector count lies outside [1, effective I0]");
+            grounded_active = checked_add(grounded_active, 1, "grounded active");
+            grounded_k_total = checked_add(grounded_k_total, static_cast<std::size_t>(count),
+                                           "grounded K_total");
+            require(std::isfinite(value), "replicate contains a non-finite probability");
+            require(value >= 0.0 && value <= 1.0,
+                    "replicate contains a probability outside the closed unit interval");
+            if (value == 0.0) zero_output_count = checked_add(zero_output_count, 1, "output zero");
+            if (value == 1.0) saturated_count = checked_add(saturated_count, 1, "saturated");
+        }
+        require(counters.zero_infector_count == 0 && counters.active_count == counters.n &&
+                    counters.active_count == grounded_active && counters.k_total == grounded_k_total &&
+                    counters.k_total >= counters.n,
+                "risk-averse probability replicate counters violate the no-zero-infector invariant");
+        require(counters.output_zero_count == zero_output_count, "output zero count mismatch");
+        require(counters.saturated_count == saturated_count, "saturated count mismatch");
+        require(counters.saturated_count <= counters.active_count,
+                "saturated count exceeds active count");
+        require(counters.qer_evaluations == counters.k_total,
+                "QER count disagrees with K_total");
+        require(counters.probability_evaluations == counters.active_count,
+                "probability evaluation count disagrees with active count");
+        require(counters.susceptible_values_consumed ==
+                    checked_multiply(3, counters.active_count, "susceptible"),
+                "susceptible consumption mismatch");
+        require(counters.infector_values_consumed ==
+                    checked_multiply(8, counters.k_total, "infector"),
+                "infector consumption mismatch");
+        for (std::size_t bank = 0; bank < 11; ++bank) {
+            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
+            require(replicate.planned_bank_lengths[bank] == expected,
+                    "planned bank length mismatch");
+            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
+            require(replicate.bank_generated[bank] == (expected > 0),
+                    "generated-bank flag mismatch");
+        }
+        require(replicate.cursors_exhausted, "replicate cursors are not exhausted");
+        const double percentile =
+            simulation::percentile_linear(replicate.probability, scenario.percentile);
+        require(same_double(replicate.percentile_probability, percentile),
+                "stored replicate percentile mismatch");
+        raw_percentiles.push_back(percentile);
+
+        const long long row_min = *std::min_element(replicate.infector_counts.begin(),
+                                                     replicate.infector_counts.end());
+        require(row_min >= 1, "risk-averse replicate contains an infector count below 1");
+        overall_min_infector_count =
+            index == 0 ? row_min : std::min(overall_min_infector_count, row_min);
+
+        const sampling_plan::SamplingPlan plan = sampling_plan::build_sampling_plan(
+            seeds, run.config, replicate.replicate_index, scenario.simulations_n,
+            scenario.occupants, scenario.community_infection_rate, sampling_plan::ResourcePolicy{},
+            sampling_plan::InfectorPolicy::risk_averse);
+        sampling_plan::validate_plan_policy_context(plan, sampling_plan::InfectorPolicy::risk_averse);
+        require(plan.counts == replicate.infector_counts,
+                "recomputed risk-averse sampling plan disagrees with the authoritative replicate "
+                "infector counts");
+        if (index == 0) {
+            provenance = plan.infector_provenance;
+        } else {
+            require(same_double(provenance.zero_mass, plan.infector_provenance.zero_mass) &&
+                        provenance.zero_mass_rounded_to_zero ==
+                            plan.infector_provenance.zero_mass_rounded_to_zero &&
+                        provenance.zero_mass_rounded_to_one ==
+                            plan.infector_provenance.zero_mass_rounded_to_one &&
+                        provenance.conditional_ppf_algorithm_version ==
+                            plan.infector_provenance.conditional_ppf_algorithm_version &&
+                        provenance.deterministic_branch_used ==
+                            plan.infector_provenance.deterministic_branch_used,
+                    "risk-averse provenance disagrees across replicates in the same batch");
+        }
+
+        totals[0] = checked_add(totals[0], counters.n, "n");
+        totals[1] = checked_add(totals[1], counters.zero_infector_count, "zero infector");
+        totals[2] = checked_add(totals[2], counters.active_count, "active");
+        totals[3] = checked_add(totals[3], counters.k_total, "K_total");
+        totals[4] = checked_add(totals[4], counters.output_zero_count, "output zero");
+        totals[5] = checked_add(totals[5], counters.saturated_count, "saturated");
+        totals[6] = checked_add(totals[6], counters.qer_evaluations, "QER");
+        totals[7] = checked_add(totals[7], counters.probability_evaluations, "probability");
+        totals[8] = checked_add(totals[8], counters.susceptible_values_consumed, "susceptible");
+        totals[9] = checked_add(totals[9], counters.infector_values_consumed, "infector");
+    }
+    require(provenance.policy == sampling_plan::InfectorPolicy::risk_averse,
+            "recomputed risk-averse plan provenance carries the wrong policy");
+    if (scenario.community_infection_rate == 1.0) {
+        require(provenance.zero_mass == 0.0 && provenance.deterministic_branch_used,
+                "p=1 risk-averse provenance must record zero_mass=0.0 and the deterministic branch");
+    }
+
+    const statistics::ReplicateSummary authoritative =
+        statistics::summarize_replicates(raw_percentiles, options.confidence_level);
+    require_same_summary(batch.summary, authoritative);
+
+    const auto& q = authoritative;
+    const std::string dispersion_status =
+        q.dispersion_status == statistics::DispersionStatus::available
+            ? "AVAILABLE"
+            : "UNAVAILABLE_SINGLE_REPLICATE";
+    const std::string input_ecai_source =
+        scenario.input_ecai_overridden ? "explicit" : "published_table4";
+    const double eca_total = model::kM3PerHourPerLitrePerSecond *
+                             static_cast<double>(scenario.occupants) *
+                             scenario.input_ecai_l_s_person;
+    const std::string banks_reconcile_value = "true";
+
+    // Comparator precedence: NOT_APPLICABLE_RISK_AVERSE wins unconditionally
+    // (see build_risk_averse_document above).
+    std::vector<std::string> row = {
+        kRiskAverseProbabilitySchemaVersion, kModelVersion,
+        std::to_string(seed_manager::kDesignVersion), "probability", category.canonical_name,
+        category.group, boolean(category.is_health_care_group), std::to_string(category.i0),
+        format_double(category.volume_m3), format_double(category.probability_susceptible_present),
+        format_double(category.people_outdoor_airflow_Lsp),
+        format_double(category.area_outdoor_airflow_Lsm2),
+        format_double(category.baseline_outdoor_airflow_Lsp),
+        format_double(category.community_infection_rate), format_double(category.mask_efficiency),
+        format_double(category.pbr_gm_m3h), format_double(category.pbr_gsd),
+        format_double(category.activity_breathing_pct), format_double(category.activity_talking_pct),
+        format_double(category.activity_vocalizing_pct), format_double(category.cdrop_gm_e4_per_m3),
+        format_double(category.cdrop_gsd), format_double(category.d_gm_e6_m),
+        format_double(category.d_gsd), format_double(category.published_ecai_Lsp),
+        format_double(category.published_rr), std::to_string(scenario.occupants),
+        format_double(scenario.volume_m3), format_double(scenario.community_infection_rate),
+        format_double(scenario.mask_efficiency), format_double(scenario.input_ecai_l_s_person),
+        input_ecai_source, format_double(eca_total), format_double(scenario.target_probability),
+        format_double(scenario.duration_hours),
+        scenario.duration_hours == 1.0 ? "hourly_target" : "target_over_selected_duration",
+        std::to_string(scenario.simulations_n), std::to_string(options.replicates_r),
+        format_double(scenario.percentile), format_double(options.confidence_level),
+        std::to_string(run.base_seed), seed_manager::kSeedPolicyVersion,
+        "risk_averse", format_double(provenance.zero_mass),
+        boolean(provenance.zero_mass_rounded_to_zero), boolean(provenance.zero_mass_rounded_to_one),
+        provenance.conditional_ppf_algorithm_version, boolean(provenance.deterministic_branch_used),
+        "forward_wells_riley_expm1", "probability_one_is_numerical_saturation",
+        boolean(run.custom_scenario), boolean(false), std::string(), std::string(), std::string(),
+        "NOT_APPLICABLE_RISK_AVERSE", dispersion_status, format_double(q.mean_l_s_person),
+        format_optional(q.degrees_of_freedom), format_optional(q.sample_sd_l_s_person),
+        format_optional(q.standard_error_l_s_person), format_optional(q.t_critical),
+        format_optional(q.ci_lower_l_s_person), format_optional(q.ci_upper_l_s_person),
+        format_double(q.min_l_s_person), format_double(q.max_l_s_person), "1",
+        std::to_string(batch.replicates.size()), std::to_string(totals[0]),
+        std::to_string(totals[1]), std::to_string(totals[2]), std::to_string(totals[3]),
+        std::to_string(overall_min_infector_count), std::to_string(totals[4]),
+        std::to_string(totals[5]), std::to_string(totals[6]), std::to_string(totals[7]),
+        std::to_string(totals[8]), std::to_string(totals[9]), "true", "true", "true",
+        banks_reconcile_value, banks_reconcile_value, boolean(options.category_supplied),
+        boolean(options.simulations_explicit), boolean(options.replicates_explicit),
+        boolean(options.percentile_explicit), boolean(options.confidence_explicit),
+        boolean(options.target_probability_explicit), boolean(options.duration_explicit),
+        boolean(options.base_seed_explicit), boolean(options.community_infection_rate.has_value()),
+        boolean(options.occupants.has_value()), boolean(options.volume_m3.has_value()),
+        boolean(options.mask_efficiency.has_value()), boolean(options.output_directory.has_value()),
+        boolean(options.summary_file.has_value()), boolean(options.replicates_file.has_value()),
+        boolean(options.write_replicates), boolean(options.mode_explicit),
+        boolean(options.input_ecai_l_s_person.has_value()),
+        boolean(options.infector_policy_explicit)};
+
+    OutputDocument document;
+    document.summary_columns = risk_averse_probability_summary_header();
+    require(document.summary_columns.size() == 103,
+            "risk-averse probability summary schema width changed");
+    require(row.size() == document.summary_columns.size(),
+            "risk-averse probability summary schema construction mismatch");
+    document.summary_rows.push_back(std::move(row));
+    document.replicate_columns = risk_averse_probability_replicate_header();
+    require(document.replicate_columns.size() == 22,
+            "risk-averse probability replicate schema width changed");
+    for (const auto& replicate : batch.replicates) {
+        const auto& counters = replicate.counters;
+        const long long replicate_min = *std::min_element(replicate.infector_counts.begin(),
+                                                           replicate.infector_counts.end());
+        document.replicate_rows.push_back({
+            std::to_string(replicate.replicate_index), "risk_averse", "probability",
+            format_double(replicate.percentile), format_double(replicate.percentile_probability),
+            std::to_string(counters.n), std::to_string(counters.zero_infector_count),
+            std::to_string(counters.active_count), std::to_string(counters.k_total),
+            std::to_string(replicate_min), std::to_string(counters.saturated_count),
+            std::to_string(counters.output_zero_count), std::to_string(counters.qer_evaluations),
             std::to_string(counters.probability_evaluations),
             std::to_string(counters.susceptible_values_consumed),
             std::to_string(counters.infector_values_consumed),

@@ -102,6 +102,13 @@ struct CliOptions {
     bool mode_explicit = false;
     std::optional<double> input_ecai_l_s_person;
 
+    // Infector policy (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 3):
+    // "community" (default) or "risk-averse", case sensitive, no aliases.
+    // Independent of `mode`; never marks the run a custom scenario by
+    // itself (see EffectiveScenario::infector_policy in simulation.h).
+    simulation::InfectorPolicy infector_policy = simulation::InfectorPolicy::community;
+    bool infector_policy_explicit = false;
+
     // Output controls. Stage 12 parses and records these only: no directory
     // or file is created, opened, written or checked.
     std::optional<std::string> output_directory;
@@ -163,8 +170,11 @@ struct ResolvedRun {
 // flag; a positional argument; a repeated flag (including a repeated boolean
 // flag); a missing value; a value that begins with "--" where a value is
 // required; `--help` combined with any other argument; an empty category or
-// path string; and any numeric value that is not a strict, locale
-// independent, full-string parse in range for its field.
+// path string; any numeric value that is not a strict, locale independent,
+// full-string parse in range for its field; an --infector-policy value other
+// than "community" or "risk-averse"; and --infector-policy risk-averse
+// combined with an explicit --community-rate <= 0 (the definitive check,
+// covering the category-default rate too, runs later in resolve_run).
 CliOptions parse_cli(const std::vector<std::string>& args);
 
 // Performs the strict category lookup (docs/MODEL_SPECIFICATION.md D7) and

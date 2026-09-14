@@ -105,6 +105,7 @@ using ecai_cpp2::seed_manager::EffectiveConfig;
 using ecai_cpp2::simulation::EffectiveOverrides;
 using ecai_cpp2::simulation::EffectiveScenario;
 using ecai_cpp2::simulation::EvaluationOrder;
+using ecai_cpp2::simulation::InfectorPolicy;
 using ecai_cpp2::simulation::OutputMode;
 using ecai_cpp2::simulation::ReplicateOptions;
 using ecai_cpp2::simulation::ReplicateResult;
@@ -1285,6 +1286,415 @@ void test_cross_mode_identity() {
           "the probability-mode percentile matches the independently interpolated Type-7 value");
 }
 
+// ------------------------------------------------------------------
+// Section 7: risk-averse infector policy simulation integration
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 5). Phase 3/4 already cover
+// CLI parsing/resolution and the Stage 6 plan-level conditional-PPF
+// semantics in their own test files; these tests exercise the policy through
+// the simulation-layer entry points (resolve_scenario, run_replicate,
+// run_replicate_from_plan, run_replicate_from_banks, run_replicates).
+// ------------------------------------------------------------------
+
+EffectiveOverrides risk_averse_overrides() {
+    EffectiveOverrides overrides;
+    overrides.infector_policy = InfectorPolicy::risk_averse;
+    overrides.infector_policy_explicit = true;
+    return overrides;
+}
+
+// run_replicate must forward the resolved policy into build_sampling_plan
+// (previously it silently always built a community plan, ignoring
+// scenario.infector_policy entirely -- the defect this phase fixes). Proven
+// by reconstructing both policies' plans independently, with the same seed
+// and config, and checking run_replicate's realized counts against the
+// risk-averse one specifically, not the community one.
+void test_risk_averse_policy_forwarded_into_plan() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    const EffectiveConfig config = make_config(patient, 200);
+    const EffectiveOverrides ra = risk_averse_overrides();
+
+    const ReplicateResult result = ecai_cpp2::simulation::run_replicate(485, config, 0, patient, ra);
+    check(result.infector_policy == InfectorPolicy::risk_averse,
+          "a risk-averse run reports result.infector_policy == risk_averse");
+
+    const ecai_cpp2::seed_manager::SeedManager seeds(485);
+    const SamplingPlan community_plan = ecai_cpp2::sampling_plan::build_sampling_plan(
+        seeds, config, 0, 200, patient.i0, patient.community_infection_rate,
+        ecai_cpp2::sampling_plan::ResourcePolicy{}, ecai_cpp2::sampling_plan::InfectorPolicy::community);
+    const SamplingPlan risk_averse_plan = ecai_cpp2::sampling_plan::build_sampling_plan(
+        seeds, config, 0, 200, patient.i0, patient.community_infection_rate,
+        ecai_cpp2::sampling_plan::ResourcePolicy{},
+        ecai_cpp2::sampling_plan::InfectorPolicy::risk_averse);
+
+    check(community_plan.n_zero > 0,
+          "sanity check: Patient room's small I0/low community rate really does produce "
+          "zero-infector rows under community policy for this fixture");
+    check(result.infector_counts == risk_averse_plan.counts,
+          "run_replicate's realized counts match the independently rebuilt risk-averse plan, "
+          "not the community plan");
+    check(result.infector_counts != community_plan.counts,
+          "run_replicate's risk-averse counts differ from what a community plan would have "
+          "produced for the identical seed/config");
+
+    check(risk_averse_plan.lhs_generated == 200 && risk_averse_plan.lhs_consumed == 200,
+          "the risk-averse plan generates and consumes exactly N count-stream uniforms");
+    check(community_plan.lhs_generated == 200 && community_plan.lhs_consumed == 200,
+          "the community plan generates and consumes exactly N count-stream uniforms");
+
+    // Identical count-stream uniforms (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md
+    // Phase 4/7): the same seed and LHS list feed both policies, so a
+    // risk-averse count is never lower than the community count the same u
+    // produced, and risk-averse never contains a zero.
+    bool pointwise_at_least = true;
+    bool risk_averse_never_zero = true;
+    for (std::size_t i = 0; i < risk_averse_plan.counts.size(); ++i) {
+        if (risk_averse_plan.counts[i] < community_plan.counts[i]) pointwise_at_least = false;
+        if (risk_averse_plan.counts[i] < 1) risk_averse_never_zero = false;
+    }
+    check(pointwise_at_least,
+          "every risk-averse count is at least its matched community count (identical "
+          "count-stream uniforms)");
+    check(risk_averse_never_zero, "no risk-averse count is zero");
+}
+
+// Risk-averse ECAi and probability modes must both produce no zero-infector
+// rows, with every simulation active and every count in [1, I0].
+void test_risk_averse_no_zero_rows_ecai_and_probability() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    const EffectiveConfig config = make_config(patient, 300);
+
+    EffectiveOverrides ecai_ra = risk_averse_overrides();
+    const ReplicateResult ecai_result =
+        ecai_cpp2::simulation::run_replicate(485, config, 0, patient, ecai_ra);
+    check(ecai_result.mode == OutputMode::ecai, "the risk-averse ECAi run resolves to ECAi mode");
+    check(ecai_result.counters.zero_infector_count == 0,
+          "risk-averse ECAi contains no zero-infector rows");
+    check(ecai_result.counters.active_count == 300 && ecai_result.counters.k_total >= 300,
+          "risk-averse ECAi marks every row active with K_total >= N");
+    bool ecai_counts_bounded = true;
+    for (const long long c : ecai_result.infector_counts) {
+        if (c < 1 || c > patient.i0) ecai_counts_bounded = false;
+    }
+    check(ecai_counts_bounded, "every risk-averse ECAi count lies in [1, I0]");
+
+    EffectiveOverrides prob_ra = risk_averse_overrides();
+    prob_ra.mode = OutputMode::probability;
+    const ReplicateResult prob_result =
+        ecai_cpp2::simulation::run_replicate(485, config, 0, patient, prob_ra);
+    check(prob_result.mode == OutputMode::probability,
+          "the risk-averse probability run resolves to probability mode");
+    check(prob_result.counters.zero_infector_count == 0,
+          "risk-averse probability contains no zero-infector rows");
+    check(prob_result.counters.active_count == 300 && prob_result.counters.k_total >= 300,
+          "risk-averse probability marks every row active with K_total >= N");
+    bool prob_counts_bounded = true;
+    for (const long long c : prob_result.infector_counts) {
+        if (c < 1 || c > patient.i0) prob_counts_bounded = false;
+    }
+    check(prob_counts_bounded, "every risk-averse probability count lies in [1, I0]");
+    bool all_in_range = true;
+    for (const double v : prob_result.probability) {
+        if (!std::isfinite(v) || !(v >= 0.0) || !(v <= 1.0)) all_in_range = false;
+    }
+    check(all_in_range, "every risk-averse probability output is finite and in [0, 1]");
+}
+
+// Assignments, bank cursors and evaluation counters must reconcile exactly
+// for a risk-averse replicate, exactly as they do for community.
+void test_risk_averse_assignments_bank_cursors_and_qer_reconcile() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    const EffectiveConfig config = make_config(patient, 150);
+    ReplicateOptions options;
+    options.collect_audit = true;
+    const EffectiveOverrides ra = risk_averse_overrides();
+
+    const ReplicateResult result =
+        ecai_cpp2::simulation::run_replicate(485, config, 0, patient, ra, options);
+
+    check(result.audit.rows.size() == 150, "the audit records one row per simulation");
+    bool every_row_active = true;
+    bool infector_counts_match_ids = true;
+    for (std::size_t row = 0; row < result.audit.rows.size(); ++row) {
+        const auto& audit_row = result.audit.rows[row];
+        if (!audit_row.active) every_row_active = false;
+        if (audit_row.infector_ids.size() !=
+            static_cast<std::size_t>(result.infector_counts[row])) {
+            infector_counts_match_ids = false;
+        }
+    }
+    check(every_row_active, "every simulation is active under risk-averse policy");
+    check(infector_counts_match_ids,
+          "every row's audited infector-id count equals its authoritative infector count");
+
+    check(result.cursors_exhausted, "every bank cursor is exactly exhausted");
+    bool bank_lengths_reconcile = true;
+    for (BankId id : kAllBankIds) {
+        const std::size_t ordinal = static_cast<std::size_t>(id);
+        const std::size_t expected =
+            ecai_cpp2::sampling_plan::is_infector_bank(id) ? result.counters.k_total
+                                                            : result.counters.active_count;
+        if (result.planned_bank_lengths[ordinal] != expected ||
+            result.final_cursors[ordinal] != expected || !result.bank_generated[ordinal]) {
+            bank_lengths_reconcile = false;
+        }
+    }
+    check(bank_lengths_reconcile,
+          "every bank is planned, generated and exhausted at N_active/K_total exactly");
+
+    check(result.counters.qer_evaluations == result.counters.k_total,
+          "one QER evaluation per realized infector");
+    check(result.counters.ecai_evaluations == result.counters.active_count &&
+              result.counters.active_count == 150,
+          "one ECAi evaluation per active row, and every row is active");
+    check(result.counters.susceptible_values_consumed == 3 * result.counters.active_count,
+          "3 susceptible banks x N_active");
+    check(result.counters.infector_values_consumed == 8 * result.counters.k_total,
+          "8 infector banks x K_total");
+}
+
+// Risk-averse probability outputs stay bounded and can genuinely saturate;
+// no zero-infector short-circuit ever produces a spurious +0.0/1.0.
+void test_risk_averse_probability_saturation_and_bounds() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    EffectiveConfig config = make_config(patient, 100);
+    config.duration_hours = 1.0e6;  // forces saturation for at least some rows
+    EffectiveOverrides ra = risk_averse_overrides();
+    ra.mode = OutputMode::probability;
+
+    const ReplicateResult result = ecai_cpp2::simulation::run_replicate(485, config, 0, patient, ra);
+    check(result.counters.zero_infector_count == 0,
+          "the saturating risk-averse probability run still has no zero-infector rows");
+    bool all_finite_in_range = true;
+    bool no_negative_zero = true;
+    for (const double v : result.probability) {
+        if (!std::isfinite(v) || !(v >= 0.0) || !(v <= 1.0)) all_finite_in_range = false;
+        if (v == 0.0 && std::signbit(v)) no_negative_zero = false;
+    }
+    check(all_finite_in_range, "every saturating risk-averse probability stays finite and in [0, 1]");
+    check(no_negative_zero, "no risk-averse probability output is a negative zero");
+    check(result.counters.saturated_count > 0,
+          "the extreme-duration fixture actually exercises numerical saturation");
+    check(result.counters.negative_clamp_count == 0,
+          "probability mode never negative-clamps, risk-averse included");
+}
+
+// The forward probability calculation must stay independent of
+// target_probability (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 5): it
+// is an ECAi-mode comparator input only, and must not leak into probability
+// mode under either infector policy.
+void test_probability_independent_of_target_probability() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+
+    EffectiveConfig config_a = make_config(patient, 80);
+    config_a.target_probability = 0.001;
+    EffectiveConfig config_b = config_a;
+    config_b.target_probability = 0.5;
+
+    EffectiveOverrides prob_ra = risk_averse_overrides();
+    prob_ra.mode = OutputMode::probability;
+    const ReplicateResult ra_a =
+        ecai_cpp2::simulation::run_replicate(485, config_a, 0, patient, prob_ra);
+    const ReplicateResult ra_b =
+        ecai_cpp2::simulation::run_replicate(485, config_b, 0, patient, prob_ra);
+    check(ra_a.mode == OutputMode::probability && ra_b.mode == OutputMode::probability,
+          "target_probability changes do not change the resolved probability mode");
+    check(ra_a.infector_policy == InfectorPolicy::risk_averse &&
+              ra_b.infector_policy == InfectorPolicy::risk_averse,
+          "target_probability changes do not change the resolved risk-averse policy");
+    check(ra_a.infector_counts.size() == 80 && ra_b.infector_counts.size() == 80,
+          "target_probability changes preserve exactly N probability rows");
+    check(ra_a.probability.size() == 80 && ra_b.probability.size() == 80,
+          "target_probability changes preserve probability vector size");
+    check(ra_a.counters.zero_infector_count == 0 && ra_b.counters.zero_infector_count == 0,
+          "target_probability changes preserve the risk-averse no-zero invariant");
+    check(ra_a.counters.qer_evaluations == ra_a.counters.k_total &&
+              ra_b.counters.qer_evaluations == ra_b.counters.k_total,
+          "target_probability changes preserve one QER evaluation per realized infector");
+
+    EffectiveOverrides prob_community;
+    prob_community.mode = OutputMode::probability;
+    const ReplicateResult community_a =
+        ecai_cpp2::simulation::run_replicate(485, config_a, 0, patient, prob_community);
+    const ReplicateResult community_b =
+        ecai_cpp2::simulation::run_replicate(485, config_b, 0, patient, prob_community);
+    check(community_a.mode == OutputMode::probability &&
+              community_b.mode == OutputMode::probability,
+          "target_probability changes preserve community probability mode");
+    check(community_a.infector_counts.size() == 80 && community_b.infector_counts.size() == 80,
+          "target_probability changes preserve community probability row count");
+    check(community_a.counters.qer_evaluations == community_a.counters.k_total &&
+              community_b.counters.qer_evaluations == community_b.counters.k_total,
+          "target_probability changes preserve community QER accounting");
+    check(ra_a.probability != ra_b.probability || community_a.probability != community_b.probability,
+          "target_probability is allowed to change streams through the current configuration fingerprint");
+    // The forward API has no target_probability field; its direct separation is
+    // covered by model tests. These run-level checks deliberately test policy,
+    // mode, row-count, and accounting invariants rather than asserting stream
+    // identity across changed fingerprints.
+}
+
+// Policy disagreement between a resolved scenario and an independently built
+// plan (a tampered or stale pairing, or a mixed-policy misuse) must be
+// rejected before build_parameter_banks allocates anything, and again if a
+// caller bypasses run_replicate_from_plan and hands a mismatched plan/bank
+// pair directly to run_replicate_from_banks.
+void test_policy_scenario_plan_mismatch_rejected() {
+    using ecai_cpp2::simulation::run_replicate_from_banks;
+    using ecai_cpp2::simulation::run_replicate_from_plan;
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    const ecai_cpp2::seed_manager::SeedManager seeds(485);
+
+    // Community-resolved scenario paired with a risk-averse-built plan.
+    {
+        const EffectiveConfig config = make_config(patient, 32);
+        const EffectiveScenario scenario = ecai_cpp2::simulation::resolve_scenario(patient, config);
+        const SamplingPlan mismatched_plan = ecai_cpp2::sampling_plan::build_sampling_plan(
+            seeds, config, 0, 32, patient.i0, patient.community_infection_rate,
+            ecai_cpp2::sampling_plan::ResourcePolicy{},
+            ecai_cpp2::sampling_plan::InfectorPolicy::risk_averse);
+        check(throws_invalid_argument([&] {
+                  run_replicate_from_plan(seeds, config, 0, mismatched_plan, patient, scenario);
+              }),
+              "a community scenario paired with a risk-averse plan is rejected by "
+              "run_replicate_from_plan before build_parameter_banks");
+
+        const ecai_cpp2::sampling_plan::ParameterBanks banks =
+            ecai_cpp2::sampling_plan::build_parameter_banks(seeds, config, 0, mismatched_plan,
+                                                              patient);
+        check(throws_invalid_argument(
+                  [&] { run_replicate_from_banks(mismatched_plan, banks, scenario); }),
+              "the same mismatch is independently rejected by run_replicate_from_banks");
+    }
+
+    // Risk-averse-resolved scenario paired with a community-built plan.
+    {
+        const EffectiveConfig config = make_config(patient, 32);
+        const EffectiveScenario scenario =
+            ecai_cpp2::simulation::resolve_scenario(patient, config, risk_averse_overrides());
+        const SamplingPlan mismatched_plan = ecai_cpp2::sampling_plan::build_sampling_plan(
+            seeds, config, 0, 32, patient.i0, patient.community_infection_rate,
+            ecai_cpp2::sampling_plan::ResourcePolicy{},
+            ecai_cpp2::sampling_plan::InfectorPolicy::community);
+        check(throws_invalid_argument([&] {
+                  run_replicate_from_plan(seeds, config, 0, mismatched_plan, patient, scenario);
+              }),
+              "a risk-averse scenario paired with a community plan is rejected by "
+              "run_replicate_from_plan before build_parameter_banks");
+
+        const ecai_cpp2::sampling_plan::ParameterBanks banks =
+            ecai_cpp2::sampling_plan::build_parameter_banks(seeds, config, 0, mismatched_plan,
+                                                              patient);
+        check(throws_invalid_argument(
+                  [&] { run_replicate_from_banks(mismatched_plan, banks, scenario); }),
+              "the same mismatch is independently rejected by run_replicate_from_banks");
+    }
+
+    // An unknown policy value on the scenario is rejected by validate_scenario
+    // before any plan/policy cross-check even runs.
+    {
+        EffectiveScenario bad = fixture_scenario();
+        bad.infector_policy = static_cast<InfectorPolicy>(99);
+        check(throws_invalid_argument(
+                  [&] { run_replicate_from_banks(fixture_plan(), fixture_banks(), bad); }),
+              "an unknown InfectorPolicy on the scenario is rejected");
+    }
+}
+
+// Risk-averse's own domain (I0 >= 1, community rate > 0) is enforced
+// authoritatively at the simulation layer, not only by the CLI or the Stage 6
+// plan builder, and rejects before any allocation.
+void test_risk_averse_invalid_domain_rejected_at_simulation_layer() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+
+    {
+        EffectiveOverrides overrides = risk_averse_overrides();
+        overrides.community_infection_rate = 0.0;
+        const EffectiveConfig config = make_config(patient, 16, overrides);
+        check(throws_invalid_argument([&] {
+                  ecai_cpp2::simulation::resolve_scenario(patient, config, overrides);
+              }),
+              "risk-averse with community_infection_rate == 0 (p = 0) is rejected at "
+              "resolve_scenario");
+        check(throws_invalid_argument([&] {
+                  ecai_cpp2::simulation::run_replicate(485, config, 0, patient, overrides);
+              }),
+              "risk-averse with p = 0 is rejected by run_replicate before any allocation");
+    }
+    {
+        EffectiveOverrides overrides = risk_averse_overrides();
+        overrides.occupants = 0;
+        const EffectiveConfig config = make_config(patient, 16, overrides);
+        check(throws_invalid_argument([&] {
+                  ecai_cpp2::simulation::resolve_scenario(patient, config, overrides);
+              }),
+              "risk-averse with I0 == 0 is rejected at resolve_scenario");
+        check(throws_invalid_argument([&] {
+                  ecai_cpp2::simulation::run_replicate(485, config, 0, patient, overrides);
+              }),
+              "risk-averse with I0 = 0 is rejected by run_replicate before any allocation");
+    }
+}
+
+// run_replicates' batch-level policy consistency: every replicate in a
+// risk-averse batch resolves to the same policy and carries no zero-infector
+// row, and an all-community batch remains an unaffected regression baseline.
+void test_run_replicates_batch_policy_consistency() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+
+    ecai_cpp2::simulation::EffectiveConfiguration ra_config;
+    ra_config.category_name = patient.canonical_name;
+    ra_config.i0 = patient.i0;
+    ra_config.volume_m3 = patient.volume_m3;
+    ra_config.mask_efficiency = patient.mask_efficiency;
+    ra_config.community_infection_rate = patient.community_infection_rate;
+    ra_config.target_probability = 0.001;
+    ra_config.duration_hours = 1.0;
+    ra_config.percentile = 0.96;
+    ra_config.simulations_n = 50;
+    ra_config.replicates_r = 5;
+    const ecai_cpp2::simulation::ReplicateBatch ra_batch = ecai_cpp2::simulation::run_replicates(
+        485, ra_config, patient, risk_averse_overrides());
+    check(ra_batch.replicates.size() == 5, "a risk-averse batch preserves exactly R = 5 results");
+    bool every_replicate_risk_averse = true;
+    bool every_replicate_zero_free = true;
+    for (const ReplicateResult& replicate : ra_batch.replicates) {
+        if (replicate.infector_policy != InfectorPolicy::risk_averse) {
+            every_replicate_risk_averse = false;
+        }
+        if (replicate.counters.zero_infector_count != 0) every_replicate_zero_free = false;
+    }
+    check(every_replicate_risk_averse,
+          "every replicate in the risk-averse batch resolves to InfectorPolicy::risk_averse");
+    check(every_replicate_zero_free,
+          "every replicate in the risk-averse batch has zero zero-infector rows");
+    check(std::isfinite(ra_batch.summary.mean_l_s_person),
+          "the risk-averse batch summary mean is finite");
+
+    ecai_cpp2::simulation::EffectiveConfiguration community_config;
+    community_config.category_name = patient.canonical_name;
+    community_config.i0 = patient.i0;
+    community_config.volume_m3 = patient.volume_m3;
+    community_config.mask_efficiency = patient.mask_efficiency;
+    community_config.community_infection_rate = patient.community_infection_rate;
+    community_config.target_probability = 0.001;
+    community_config.duration_hours = 1.0;
+    community_config.percentile = 0.96;
+    community_config.simulations_n = 50;
+    community_config.replicates_r = 3;
+    const ecai_cpp2::simulation::ReplicateBatch community_batch =
+        ecai_cpp2::simulation::run_replicates(485, community_config, patient);
+    check(community_batch.replicates.size() == 3,
+          "an unaffected community batch preserves exactly R = 3 results (regression baseline)");
+    bool every_replicate_community = true;
+    for (const ReplicateResult& replicate : community_batch.replicates) {
+        if (replicate.infector_policy != InfectorPolicy::community) {
+            every_replicate_community = false;
+        }
+    }
+    check(every_replicate_community,
+          "every replicate in an un-overridden batch resolves to InfectorPolicy::community");
+}
+
 }  // namespace
 
 int main() {
@@ -1304,6 +1714,14 @@ int main() {
     test_interleaved_schedule_pinned();
     test_probability_injected_fixture();
     test_cross_mode_identity();
+    test_risk_averse_policy_forwarded_into_plan();
+    test_risk_averse_no_zero_rows_ecai_and_probability();
+    test_risk_averse_assignments_bank_cursors_and_qer_reconcile();
+    test_risk_averse_probability_saturation_and_bounds();
+    test_probability_independent_of_target_probability();
+    test_policy_scenario_plan_mismatch_rejected();
+    test_risk_averse_invalid_domain_rejected_at_simulation_layer();
+    test_run_replicates_batch_policy_consistency();
 
     std::cout << g_checks << " checks executed.\n";
     if (g_checks == 0) {

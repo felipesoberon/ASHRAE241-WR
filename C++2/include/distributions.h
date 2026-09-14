@@ -163,10 +163,47 @@ class BinomialPpfTable {
     long long n() const { return n_; }
     double p() const { return p_; }
 
+    // Zero-infector mass P(X = 0) for this table's (n, p), exposed for
+    // risk-averse infector-policy callers that must know it before consuming
+    // any LHS draws. Degenerate cases are answered without touching cdf_
+    // (which is empty for all of them): n = 0 always returns 1.0 (X is
+    // identically 0 regardless of p), p <= 0 returns 1.0 (all mass at 0),
+    // and p >= 1.0 (with n >= 1) returns 0.0 (all mass at n). Otherwise
+    // returns the stored cdf_[0], identical to the value ppf() itself
+    // compares against u at k = 0.
+    double zero_mass() const;
+
+    // Conditional binomial ppf given X >= 1 ("at least one infector" out of
+    // n = I0 candidates each with success probability p): the smallest k in
+    // [1, n] such that the retained conditional-tail cumulative mass
+    // T[k] = sum(pmf[1..k]) / sum(pmf[1..n]) is >= u. T is built once, in
+    // the constructor, by compensated-summing the same PMF terms cdf_ is
+    // built from -- never by subtracting cdf_[k] - zero_mass, which would
+    // cancel catastrophically whenever zero_mass is close to 1. Requires
+    // n (I0) >= 1 and p strictly positive; throws std::invalid_argument
+    // otherwise (this is a stricter domain than the table's own community
+    // (n, p) contract, so a table built for community use with n = 0 or
+    // p = 0 correctly rejects a conditional query). u must be finite and in
+    // the half-open interval (0, 1], validated exactly as ppf()'s u; throws
+    // std::invalid_argument otherwise.
+    //
+    // p = 1 short-circuits before any table access -- the conditional
+    // distribution is a point mass at n for every valid u -- and returns n
+    // unconditionally; zero_mass() reports 0.0 in that branch. If
+    // zero_mass() rounds to exactly 1.0 in binary64 for this representable
+    // positive p (the conditional tail is too small relative to pmf[0] to
+    // resolve numerically), an explicit limiting branch returns 1 rather
+    // than searching an unresolvable tail or relying on a coincidental
+    // 0 >= 0 comparison to produce the same answer. Otherwise this is
+    // bounded by exactly n evaluated terms, the same explicit finite
+    // iteration bound as ppf().
+    long long conditional_ppf_at_least_one(double u) const;
+
   private:
     long long n_;
     double p_;
     std::vector<double> cdf_;
+    std::vector<double> conditional_tail_;
 };
 
 }  // namespace distributions

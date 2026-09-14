@@ -20,6 +20,14 @@ inline constexpr const char* kOutputSchemaVersion = "stage13-v1";
 // above is unaffected: build_document dispatches to build_probability_document
 // only when the resolved run is in probability mode.
 inline constexpr const char* kProbabilitySchemaVersion = "stage13-prob-v1";
+// Risk-averse infector-policy document schemas
+// (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6). Distinct from, and never
+// substituted for, the two community schemas above: build_document dispatches
+// to one of these only when the resolved run's infector policy is
+// risk_averse, and the community/probability schemas and their serialized
+// bytes are otherwise emitted completely unchanged.
+inline constexpr const char* kRiskAverseSchemaVersion = "stage13-ra-v1";
+inline constexpr const char* kRiskAverseProbabilitySchemaVersion = "stage13-prob-ra-v1";
 
 struct OutputDocument {
     std::vector<std::string> summary_columns;
