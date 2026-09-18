@@ -227,10 +227,11 @@ int main() {
             "--duration-hours",     "--base-seed",       "--community-rate",
             "--occupants",          "--volume-m3",       "--mask-efficiency",
             "--mode",               "--input-ecai",      "--infector-policy",
+            "--qer-distribution",
             "--output-directory",   "--summary-file",    "--replicates-file",
             "--write-replicates",   "--help"};
         check(planned.size() == cli::accepted_flags().size(),
-              "the parser accepts exactly the 20 planned flags");
+              "the parser accepts exactly the 21 planned flags");
         for (const std::string& flag : planned) {
             bool known = false;
             for (const std::string& parser_flag : cli::accepted_flags()) {

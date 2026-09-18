@@ -371,3 +371,27 @@ The default invocation, `--category NAME` with no other flags, runs
 `--infector-policy community` is the default and preserves zero-infector community-mixture behavior. `--infector-policy risk-averse` conditions both ECAi and probability calculations on at least one infector, using a conditional PPF in CDF space and exactly N count-stream LHS values. It rejects `I0==0` and nonpositive community rates before output creation.
 
 Risk-averse output uses `stage13-ra-v1` for ECAi and `stage13-prob-ra-v1` for probability. These schemas record policy, zero-mass and conditional-PPF provenance, enforce zero-infector count 0 and active count N, and use `NOT_APPLICABLE_RISK_AVERSE` with population comparator fields blank. C++2 keeps community as the default in both modes; this differs from the legacy probability executable's historical require-infectors default.
+
+## QER distribution selector
+
+`--qer-distribution NAME` selects the QER (quanta emission rate) calculation family
+(`docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md`). Accepted canonical values are:
+
+- `jones` — full mechanistic Jones et al. calculation. This is the default when
+  `--qer-distribution` is omitted.
+- `jones-fitted` — the direct log10-normal fit to Jones et al. output.
+- a full canonical Mikszewski profile name, e.g.
+  `mikszewski-sars-cov-2-standing-speaking`. Bare `mikszewski` is rejected: no
+  default profile is resolved for it.
+
+Matching is case sensitive with no aliases. Any other value, including a
+partial or malformed Mikszewski profile name, is rejected strictly at parse
+time. Any explicit `--qer-distribution` value, including an explicit `jones`,
+marks the run a custom scenario, because it changes the QER calculation
+mechanism itself.
+
+`--qer-distribution` is resolved to an immutable descriptor before sampling
+begins. The selector controls the selected QER family/profile and the
+direct-QER bank where applicable, propagates through the simulation loop, and
+is recorded in versioned output provenance. Full Jones remains the default
+when `--qer-distribution` is omitted.

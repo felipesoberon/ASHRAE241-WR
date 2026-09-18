@@ -28,6 +28,13 @@ inline constexpr const char* kProbabilitySchemaVersion = "stage13-prob-v1";
 // bytes are otherwise emitted completely unchanged.
 inline constexpr const char* kRiskAverseSchemaVersion = "stage13-ra-v1";
 inline constexpr const char* kRiskAverseProbabilitySchemaVersion = "stage13-prob-ra-v1";
+// Direct-QER schemas are deliberately distinct from every full-Jones schema.
+// The suffix columns are run/replicate metadata, not per-simulation fields.
+inline constexpr const char* kDirectOutputSchemaVersion = "stage13-qer-direct-v1";
+inline constexpr const char* kDirectProbabilitySchemaVersion = "stage13-prob-qer-direct-v1";
+inline constexpr const char* kDirectRiskAverseSchemaVersion = "stage13-ra-qer-direct-v1";
+inline constexpr const char* kDirectRiskAverseProbabilitySchemaVersion =
+    "stage13-prob-ra-qer-direct-v1";
 
 struct OutputDocument {
     std::vector<std::string> summary_columns;

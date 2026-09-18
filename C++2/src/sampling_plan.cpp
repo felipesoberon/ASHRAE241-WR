@@ -5,6 +5,7 @@
 
 #include "distributions.h"
 #include "lhs.h"
+#include "qer_direct.h"
 
 #include <array>
 #include <cmath>
@@ -467,6 +468,50 @@ double transform_value(BankId bank, double u, const OccupancyCategory& category)
                                  std::to_string(static_cast<std::uint64_t>(bank)));
 }
 
+// Builds one exact-size bank (susceptible- or infector-sized) from its
+// traits and pre-validated length, exactly like the per-bank loop body in
+// build_parameter_banks below. Factored out (rather than having
+// build_parameter_banks call it) so that function's existing code path is
+// untouched; the family-aware path below is the only caller.
+ParameterBank build_one_bank(const seed_manager::SeedManager& seeds,
+                              const seed_manager::EffectiveConfig& config,
+                              std::uint64_t replicate_index, const BankTraits& traits,
+                              std::size_t length, const OccupancyCategory& category) {
+    ParameterBank bank;
+    bank.id = traits.bank;
+    bank.stream = traits.stream;
+    if (length == 0) {
+        return bank;
+    }
+    bank.seed = seeds.derive_seed(config, replicate_index, traits.stream,
+                                   static_cast<std::uint64_t>(length));
+    bank.generated = true;
+    const std::vector<double> uniforms = lhs::generate_lhs_1d(length, bank.seed);
+    bank.values.reserve(length);
+    for (std::size_t i = 0; i < uniforms.size(); ++i) {
+        const double value = transform_value(traits.bank, uniforms[i], category);
+        if (!std::isfinite(value)) {
+            throw std::runtime_error("build_one_bank: bank " + std::string(traits.name) + " index " +
+                                      std::to_string(i) + " transformed to a nonfinite value");
+        }
+        bank.values.push_back(value);
+    }
+    return bank;
+}
+
+// Rejects a QerFamily outside the declared enum before it is trusted (same
+// defensive pattern as require_known_infector_policy). No `default:` label,
+// so a future fourth enumerator trips -Wswitch.
+void require_known_qer_family(qer_direct::QerFamily family, const char* context) {
+    switch (family) {
+        case qer_direct::QerFamily::Jones:
+        case qer_direct::QerFamily::JonesFitted:
+        case qer_direct::QerFamily::Mikszewski:
+            return;
+    }
+    throw std::invalid_argument(std::string(context) + ": unknown QerFamily");
+}
+
 // Re-summarizes plan.counts independently and rejects any field that
 // disagrees, so a hand-assembled or mutated plan cannot silently mis-size a
 // bank. Runs before any bank allocation.
@@ -736,6 +781,322 @@ ReplicateAssignments assign_replicate(ParameterCursor& cursor, const SamplingPla
 ReplicateAssignments assign_replicate(const ParameterBanks& banks, const SamplingPlan& plan) {
     ParameterCursor cursor(banks);
     return assign_replicate(cursor, plan);
+}
+
+
+// ===================================================================
+// Package 3a: family-aware Stage 7 bank allocation and accounting.
+// See include/sampling_plan.h for the full contract.
+// ===================================================================
+
+BankBudget compute_family_bank_budget(qer_direct::QerFamily family, std::size_t n,
+                                       std::size_t n_active, std::size_t k_total,
+                                       const ResourcePolicy& policy) {
+    require_known_qer_family(family, "compute_family_bank_budget");
+    if (family == qer_direct::QerFamily::Jones) {
+        return compute_bank_budget(n, n_active, k_total, policy);
+    }
+
+    // Direct-family formula (QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase 3):
+    // N + 3*N_active + K_total persistent elements, plus the transient
+    // K_total-length LHS uniform buffer that is simultaneously live with the
+    // direct-QER bank's own K_total values during its one generation pass.
+    if (n_active > n) {
+        throw std::invalid_argument("compute_family_bank_budget: N_active=" +
+                                     std::to_string(n_active) + " exceeds N=" + std::to_string(n));
+    }
+    if (k_total < n_active) {
+        throw std::invalid_argument("compute_family_bank_budget: K_total=" + std::to_string(k_total) +
+                                     " is below N_active=" + std::to_string(n_active) +
+                                     "; every active simulation has at least one infector");
+    }
+    if (n_active == 0 && k_total != 0) {
+        throw std::invalid_argument(
+            "compute_family_bank_budget: K_total is nonzero with N_active == 0");
+    }
+    if (k_total > policy.max_total_infectors) {
+        throw std::runtime_error("compute_family_bank_budget: K_total=" + std::to_string(k_total) +
+                                  " exceeds ResourcePolicy::max_total_infectors=" +
+                                  std::to_string(policy.max_total_infectors));
+    }
+
+    const std::size_t max_bank = std::vector<double>().max_size();
+    if (n > max_bank || n_active > max_bank || k_total > max_bank) {
+        throw std::runtime_error(
+            "compute_family_bank_budget: a required bank length exceeds "
+            "std::vector<double>::max_size()");
+    }
+
+    std::size_t susceptible_elements = 0;
+    std::size_t total_elements = 0;
+    std::size_t transient_elements = 0;
+    if (!checked_mul(n_active, kSusceptibleBankCount, susceptible_elements) ||
+        !checked_add(n, susceptible_elements, total_elements) ||
+        !checked_add(total_elements, k_total, total_elements) ||
+        !checked_add(total_elements, k_total, transient_elements)) {
+        throw std::runtime_error(
+            "compute_family_bank_budget: N + 3*N_active + K_total (+ transient LHS buffer) "
+            "overflows std::size_t");
+    }
+
+    std::size_t transient_bytes = 0;
+    std::size_t persistent_bytes = 0;
+    if (!checked_mul(transient_elements, sizeof(double), transient_bytes) ||
+        !checked_mul(total_elements, sizeof(double), persistent_bytes)) {
+        throw std::runtime_error(
+            "compute_family_bank_budget: combined-bank byte count overflows std::size_t");
+    }
+    if (transient_bytes > policy.max_bytes) {
+        throw std::runtime_error("compute_family_bank_budget: combined banks require " +
+                                  std::to_string(transient_bytes) +
+                                  " peak bytes, exceeding ResourcePolicy::max_bytes=" +
+                                  std::to_string(policy.max_bytes));
+    }
+
+    BankBudget budget;
+    budget.total_elements = total_elements;
+    budget.total_bytes = persistent_bytes;
+    return budget;
+}
+
+std::uint64_t DirectQerBank::value_id(std::size_t index) const {
+    if (index >= values.size()) {
+        throw std::out_of_range("DirectQerBank::value_id: index " + std::to_string(index) +
+                                 " is outside the direct-QER bank of length " +
+                                 std::to_string(values.size()));
+    }
+    return static_cast<std::uint64_t>(index);
+}
+
+FamilyParameterBanks build_family_parameter_banks(
+    const seed_manager::SeedManager& seeds, const seed_manager::EffectiveConfig& config,
+    std::uint64_t replicate_index, const SamplingPlan& plan, const OccupancyCategory& category,
+    qer_direct::QerFamily family, const qer_direct::DirectQerParams& direct_params,
+    const ResourcePolicy& policy) {
+    // --- Every check below runs before the first bank allocation. ---
+    require_known_qer_family(family, "build_family_parameter_banks");
+    if (family != qer_direct::QerFamily::Jones) {
+        if (!std::isfinite(direct_params.mu_log10) || !std::isfinite(direct_params.sigma_log10) ||
+            direct_params.sigma_log10 <= 0.0) {
+            throw std::invalid_argument(
+                "build_family_parameter_banks: direct_params must have a finite mu_log10 and a "
+                "finite, positive sigma_log10");
+        }
+    }
+    validate_plan(plan);
+    const BankBudget budget =
+        compute_family_bank_budget(family, plan.n, plan.n_active, plan.k_total, policy);
+
+    // --- All checks passed; bank generation proceeds. ---
+    FamilyParameterBanks result;
+    result.family = family;
+    result.n = plan.n;
+    result.n_active = plan.n_active;
+    result.k_total = plan.k_total;
+    result.budget = budget;
+
+    for (std::size_t i = 0; i < kSusceptibleBanks.size(); ++i) {
+        const BankTraits& traits = kBankTraits[ordinal_of(kSusceptibleBanks[i])];
+        result.susceptible_banks[i] =
+            build_one_bank(seeds, config, replicate_index, traits, plan.n_active, category);
+    }
+
+    if (family == qer_direct::QerFamily::Jones) {
+        for (std::size_t i = 0; i < kInfectorBanks.size(); ++i) {
+            const BankTraits& traits = kBankTraits[ordinal_of(kInfectorBanks[i])];
+            result.infector_banks[i] =
+                build_one_bank(seeds, config, replicate_index, traits, plan.k_total, category);
+        }
+    } else {
+        DirectQerBank direct;
+        direct.stream = seed_manager::StreamId::direct_qer;
+        if (plan.k_total > 0) {
+            direct.seed = seeds.derive_seed(config, replicate_index,
+                                             seed_manager::StreamId::direct_qer,
+                                             static_cast<std::uint64_t>(plan.k_total));
+            direct.generated = true;
+            const std::vector<double> uniforms = lhs::generate_lhs_1d(plan.k_total, direct.seed);
+            direct.values.reserve(plan.k_total);
+            for (std::size_t i = 0; i < uniforms.size(); ++i) {
+                const double value =
+                    qer_direct::sample_direct_qer_log10normal(uniforms[i], direct_params);
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error("build_family_parameter_banks: direct-QER bank index " +
+                                              std::to_string(i) +
+                                              " transformed to a nonfinite value");
+                }
+                direct.values.push_back(value);
+            }
+        }
+        result.direct_qer_bank = std::move(direct);
+    }
+
+    return result;
+}
+
+SusceptibleParameters FamilyParameterCursor::take_susceptible() {
+    const std::array<ParameterBank, 3>& banks = banks_->susceptible_banks;
+    if (susceptible_cursor_ >= banks[0].values.size()) {
+        throw std::runtime_error(
+            "FamilyParameterCursor::take_susceptible: susceptible banks are exhausted at index " +
+            std::to_string(susceptible_cursor_) + "; there is no refill path");
+    }
+    SusceptibleParameters person;
+    person.bank_index = susceptible_cursor_;
+    person.pbr_m3h = banks[0].values[susceptible_cursor_];
+    person.gamma_per_h = banks[1].values[susceptible_cursor_];
+    person.lambda_per_h = banks[2].values[susceptible_cursor_];
+    for (std::size_t i = 0; i < banks.size(); ++i) {
+        person.ids[i] = banks[i].value_id(susceptible_cursor_);
+    }
+    ++susceptible_cursor_;
+    return person;
+}
+
+InfectorParameters FamilyParameterCursor::take_jones_infector() {
+    if (banks_->family != qer_direct::QerFamily::Jones) {
+        throw std::runtime_error(
+            "FamilyParameterCursor::take_jones_infector: plan family is not Jones");
+    }
+    const std::array<ParameterBank, 8>& banks = banks_->infector_banks;
+    if (infector_cursor_ >= banks[0].values.size()) {
+        throw std::runtime_error(
+            "FamilyParameterCursor::take_jones_infector: infector banks are exhausted at index " +
+            std::to_string(infector_cursor_) + "; there is no refill path");
+    }
+    InfectorParameters person;
+    person.bank_index = infector_cursor_;
+    person.pbr_m3h = banks[0].values[infector_cursor_];
+    person.c_drop = banks[1].values[infector_cursor_];
+    person.d_bar = banks[2].values[infector_cursor_];
+    person.evaporation_factor = banks[3].values[infector_cursor_];
+    person.gvl_copies_per_ml = banks[4].values[infector_cursor_];
+    person.viable_fraction = banks[5].values[infector_cursor_];
+    person.rtd = banks[6].values[infector_cursor_];
+    person.dose_constant = banks[7].values[infector_cursor_];
+    for (std::size_t i = 0; i < banks.size(); ++i) {
+        person.ids[i] = banks[i].value_id(infector_cursor_);
+    }
+    ++infector_cursor_;
+    return person;
+}
+
+double FamilyParameterCursor::take_direct_infector() {
+    if (banks_->family == qer_direct::QerFamily::Jones) {
+        throw std::runtime_error("FamilyParameterCursor::take_direct_infector: plan family is Jones");
+    }
+    const DirectQerBank& bank = banks_->direct_qer_bank;
+    if (direct_cursor_ >= bank.values.size()) {
+        throw std::runtime_error(
+            "FamilyParameterCursor::take_direct_infector: direct-QER bank is exhausted at index " +
+            std::to_string(direct_cursor_) + "; there is no refill path");
+    }
+    const double value = bank.values[direct_cursor_];
+    ++direct_cursor_;
+    return value;
+}
+
+bool FamilyParameterCursor::exhausted() const {
+    if (susceptible_cursor_ != banks_->susceptible_banks[0].values.size()) {
+        return false;
+    }
+    if (banks_->family == qer_direct::QerFamily::Jones) {
+        return infector_cursor_ == banks_->infector_banks[0].values.size();
+    }
+    return direct_cursor_ == banks_->direct_qer_bank.values.size();
+}
+
+void FamilyParameterCursor::finalize() const {
+    for (const ParameterBank& bank : banks_->susceptible_banks) {
+        if (susceptible_cursor_ != bank.values.size()) {
+            throw std::runtime_error(
+                "FamilyParameterCursor::finalize: a susceptible bank consumed " +
+                std::to_string(susceptible_cursor_) + " of " + std::to_string(bank.values.size()) +
+                " planned values");
+        }
+    }
+    if (banks_->family == qer_direct::QerFamily::Jones) {
+        for (const ParameterBank& bank : banks_->infector_banks) {
+            if (infector_cursor_ != bank.values.size()) {
+                throw std::runtime_error(
+                    "FamilyParameterCursor::finalize: an infector bank consumed " +
+                    std::to_string(infector_cursor_) + " of " + std::to_string(bank.values.size()) +
+                    " planned values");
+            }
+        }
+    } else {
+        const std::size_t length = banks_->direct_qer_bank.values.size();
+        if (direct_cursor_ != length) {
+            throw std::runtime_error("FamilyParameterCursor::finalize: the direct-QER bank consumed " +
+                                      std::to_string(direct_cursor_) + " of " +
+                                      std::to_string(length) + " planned values");
+        }
+    }
+}
+
+FamilyReplicateAssignments assign_family_replicate(FamilyParameterCursor& cursor,
+                                                     const SamplingPlan& plan) {
+    validate_plan(plan);
+    const FamilyParameterBanks& banks = cursor.banks();
+    if (banks.n != plan.n || banks.n_active != plan.n_active || banks.k_total != plan.k_total) {
+        throw std::invalid_argument(
+            "assign_family_replicate: plan accounting does not match the banks it is traversed "
+            "against");
+    }
+    if (cursor.traversal_started_) {
+        throw std::runtime_error("assign_family_replicate: this cursor has already been traversed");
+    }
+    cursor.traversal_started_ = true;
+
+    FamilyReplicateAssignments assignments;
+    assignments.family = banks.family;
+    assignments.n_active = plan.n_active;
+    assignments.k_total = plan.k_total;
+    assignments.simulations.reserve(plan.n);
+    std::size_t direct_index = 0;
+    for (std::size_t i = 0; i < plan.counts.size(); ++i) {
+        FamilySimulationAssignment row;
+        row.simulation_index = i;
+        row.infector_count = plan.counts[i];
+        if (plan.counts[i] == 0) {
+            // A zero-infector row advances no cursor at all.
+            assignments.simulations.push_back(std::move(row));
+            continue;
+        }
+        row.active = true;
+        row.susceptible = cursor.take_susceptible();
+        row.infectors.reserve(static_cast<std::size_t>(plan.counts[i]));
+        for (long long k = 0; k < plan.counts[i]; ++k) {
+            FamilyInfectorAssignment infector;
+            if (banks.family == qer_direct::QerFamily::Jones) {
+                infector.is_direct = false;
+                infector.jones = cursor.take_jones_infector();
+                infector.bank_index = infector.jones.bank_index;
+                infector.id = infector.jones.ids[0];
+            } else {
+                const std::size_t index = direct_index;
+                infector.is_direct = true;
+                infector.bank_index = index;
+                infector.direct_qer_quanta_per_h = cursor.take_direct_infector();
+                infector.id = banks.direct_qer_bank.value_id(index);
+                ++direct_index;
+            }
+            row.infectors.push_back(infector);
+        }
+        assignments.simulations.push_back(std::move(row));
+    }
+
+    cursor.finalize();
+    assignments.final_susceptible_cursor = cursor.susceptible_cursor_;
+    assignments.final_infector_cursor = cursor.infector_cursor_;
+    assignments.final_direct_cursor = cursor.direct_cursor_;
+    return assignments;
+}
+
+FamilyReplicateAssignments assign_family_replicate(const FamilyParameterBanks& banks,
+                                                     const SamplingPlan& plan) {
+    FamilyParameterCursor cursor(banks);
+    return assign_family_replicate(cursor, plan);
 }
 }  // namespace sampling_plan
 }  // namespace ecai_cpp2

@@ -27,7 +27,7 @@ A removed stream leaves its identifier reserved. An unrecognized identifier is r
 
 ## Effective-configuration serialization
 
-The effective configuration is serialized as one ASCII string with `|` delimiters and this fixed field order:
+The effective configuration is serialized as one ASCII string with `|` delimiters and these eleven fields, in this fixed order:
 
 1. canonical publication category name;
 2. `I0`;
@@ -103,35 +103,34 @@ These are empirical supported-domain checks, not a mathematical proof that a fin
 
 ## Probability mode
 
-Probability mode (`--mode probability`, `include/simulation.h` `OutputMode::probability`) evaluates the forward Wells-Riley probability at a fixed input ECAi instead of inverting for ECAi. It reuses this seed policy unchanged:
+`--mode probability` (`include/simulation.h` `OutputMode::probability`) evaluates the forward
+Wells-Riley probability at a fixed input ECAi instead of inverting for ECAi. It reuses this seed
+policy unchanged.
 
-- `mode` and the resolved `input_ecai_l_s_person` are **not** fields of `EffectiveConfig` and are not serialized into the effective-configuration string or folded into the fingerprint. Both modes therefore derive identical stream seeds, banks, replicate assignments, and cursor positions for the same `(category, overrides, N, R, percentile, confidence, target, duration, base seed)`.
-- `target_probability` remains in the fingerprint even though probability mode uses it only as an output-stage comparator against `raw_mean_probability`, never as a model input. Consequently sweeping `--target-probability` in probability mode changes the derived seeds and samples exactly as it does in ECAi mode; it is not a same-sample sweep.
-- `--input-ecai` is not a fingerprint field, so sweeping it reuses one sample set under one seed. `--mode` itself is not a fingerprint field either, so `--mode ecai` explicit derives byte-identical seeds to omitting `--mode`.
-- The resolved `OutputMode` (`ReplicateResult::mode`, set from the resolved `EffectiveScenario::mode`) determines only which deterministic per-row calculation and output fields are populated (`probability`/`percentile_probability` vs. `ecai_l_s_person`/`percentile_l_s_person`); it does not alter stream construction, assignment order, or QER consumption, which are identical between modes.
-- The sampling-design version is not incremented for probability mode: it changes the deterministic per-row map, not stochastic stream construction, assignment, or consumption.
-- An explicit `--input-ecai` and any override of the four category scientific inputs mark the run `custom_scenario` and suppress the comparator, but do not change fingerprint behavior beyond what those overrides already did in ECAi mode.
-
-See `docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md` §6 for the full rationale and cross-mode test coverage.
-
-## Probability mode
-
-`--mode probability` evaluates the forward Wells-Riley probability at a fixed input ECAi instead
-of inverting for ECAi. Neither `mode` nor `input_ecai_l_s_person` is a field of `EffectiveConfig`
-and neither is serialized into the fingerprint. Consequently, for an identical
-`(category, overrides, N, R, percentile, confidence, target, duration, base seed)`, ECAi mode and
-probability mode derive identical stream seeds and therefore identical `infector_counts`,
-parameter banks, per-replicate assignment order, and cursor state. Every susceptible and infector
-row consumes the same QER and other sampled values in the same order in both modes; only the
-deterministic per-row formula applied to those already-sampled values differs. The sampling-design
-version stays `1`: probability mode is a new consumer of the existing streams, not a change to
-stream construction, assignment, or consumption order.
+Neither `mode` nor the resolved `input_ecai_l_s_person` is a field of `EffectiveConfig`, and
+neither is serialized into the effective-configuration string or folded into the fingerprint.
+Consequently, for an identical `(category, overrides, N, R, percentile, confidence, target,
+duration, base seed)`, ECAi mode and probability mode derive identical stream seeds and therefore
+identical `infector_counts`, parameter banks, per-replicate assignment order, and cursor state.
+Every susceptible and infector row consumes the same QER and other sampled values in the same
+order in both modes; only the deterministic per-row formula applied to those already-sampled
+values differs. `--input-ecai` is not a fingerprint field, so sweeping it reuses one sample set
+under one seed, and `--mode` itself is not a fingerprint field either, so an explicit
+`--mode ecai` derives byte-identical seeds to omitting `--mode`.
 
 Dispatch onto the two modes is by the *resolved* `scenario.mode`, never by the caller-supplied
 `overrides.mode` alone. `run_replicate_from_banks` sets `result.mode = scenario.mode`, and every
 downstream consumer (`run_replicates`, `main.cpp`, and both `output.cpp` document builders)
 re-checks that `overrides.mode`, `scenario.mode`, and every replicate's `mode` agree before
-proceeding, rejecting the run otherwise.
+proceeding, rejecting the run otherwise. The resolved `OutputMode` (`ReplicateResult::mode`)
+determines only which deterministic per-row calculation and output fields are populated
+(`probability`/`percentile_probability` vs. `ecai_l_s_person`/`percentile_l_s_person`); it does
+not alter stream construction, assignment order, or QER consumption, which are identical between
+modes.
+
+The sampling-design version stays `1`: probability mode is a new consumer of the existing streams,
+not a change to stochastic stream construction, assignment, or consumption order, since it only
+changes the deterministic per-row map.
 
 `target_probability` remains a fingerprint field in both modes. In probability mode the target is
 only a comparator applied to `raw_mean_probability` at the output stage; it is never read by the
@@ -142,9 +141,18 @@ sweeping the target across runs is not a same-sample sweep — comparing several
 one sample set requires holding the target at its default and comparing `raw_percentile_probability`
 values offline. An explicit `--target-probability` also marks the run custom, like any other
 scientific-input override, and suppresses the comparator, so the only comparator-eligible target is
-the frozen default. `--input-ecai` and `--mode` are not fingerprint fields, so sweeping the input
-ECAi, or toggling an explicit `--mode ecai` against omitting `--mode` entirely, reuses one sample
-set.
+the frozen default. An explicit `--input-ecai` and any override of the four category scientific
+inputs likewise mark the run `custom_scenario` and suppress the comparator, but do not change
+fingerprint behavior beyond what those overrides already did in ECAi mode.
+
+See `docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md` §6 for the full rationale and cross-mode test
+coverage.
+
+## Direct-QER stream identifier
+
+`StreamId::direct_qer` (value `12`) is a new, appended, isolated stream identifier for the direct-QER work package. It does not renumber, reuse, or otherwise disturb any existing full-Jones stream identifier: `DK` (`11`) remains the highest full-Jones `StreamId`, and default seed derivation, the sampling-design version, and default outputs for the full-Jones path remain byte-identical to before this addition. Package 3a sampling and bank allocation, and package 3b simulation, consume StreamId::direct_qer. The stream remains appended and isolated: it does not renumber or reuse full-Jones identifiers, and full-Jones default seed derivation, sampling design, and outputs remain unchanged.
+
+QER family and Mikszewski profile (`--qer-distribution`) are **not** fields of `EffectiveConfig` and are not serialized into the effective-configuration string or folded into the fingerprint; only the eleven fields listed above are. Consequently, for identical `(category, overrides, N, R, percentile, confidence, target, duration, base seed)`, all three QER families derive an identical `infector_count` stream and identical susceptible banks (`susceptible_pbr`, `gamma`, `lambda`); `direct_qer` (stream 12) is itself seeded from the same fingerprint, `replicate_index`, `stream_id=12`, and `list_length=K_total`, none of which vary by family or profile, so Jones-fitted and every Mikszewski profile at the same otherwise-identical configuration consume the same direct-bank LHS uniforms, transformed through each family's own `(mu_log10, sigma_log10)`. Only the infector-side emission realization differs between the full-Jones 8-bank path and the shared direct-QER stream. This is what makes a bounded full-Jones-versus-Jones-fitted comparison a statistical comparison of two different realizations under matched controls, not a bit-identical replay; see `QER_FULL_JONES_VS_JONES_FITTED_VALIDATION.md`. An explicit `--qer-distribution` still marks the run `custom_scenario` (`docs/CLI_REFERENCE.md`), which is an output-provenance/comparator-eligibility flag, not a fingerprint field.
 
 ## Portability boundary
 

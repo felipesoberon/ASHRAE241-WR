@@ -71,6 +71,44 @@ The 11 named parameter banks are built in this fixed order:
 
 Each bank is one complete one-dimensional LHS with its own stream ID, exact length, and seed. The susceptible and infector PBR banks are distinct even though they use the same category distribution. No realized value is shared between roles or between infectors.
 
+## Family-aware banks: one direct-QER bank versus eight Jones banks
+
+`--qer-distribution` (`docs/CLI_REFERENCE.md`, `docs/MODEL_SPECIFICATION.md` §3.2) selects the
+Stage 7 bank layout once, before any bank is allocated (`compute_family_bank_budget`,
+`build_family_parameter_banks`, `include/sampling_plan.h`).
+
+- **Full Jones (default).** Unchanged: the 3 susceptible banks plus the 8 infector-sized banks
+  above, same seeds, order, and values as `build_parameter_banks`.
+- **Jones-fitted and Mikszewski.** The 3 susceptible banks plus exactly one direct-QER bank of
+  length `K_total`, on a dedicated stream id (`StreamId::direct_qer` = 12, `docs/SEED_POLICY.md`),
+  with one LHS draw and one `qer_direct::sample_direct_qer_log10normal` transform per realized
+  infector. The 8 full-Jones infector banks are not allocated, seeded, or iterated for either
+  direct family.
+
+Exactly one of {8 Jones infector banks, 1 direct-QER bank} is ever generated for a given plan; the
+other is left entirely default/ungenerated — a direct family is never represented as eight empty
+Jones banks plus a side path.
+
+The family-specific persistent-bank formula is:
+
+```text
+Full Jones:        N + 3*N_active + 8*K_total
+Direct QER modes:  N + 3*N_active + K_total
+```
+
+plus, for a direct family only, a transient `K_total`-length LHS uniform buffer alive during the
+direct bank's single generation pass. Both formulas are checked, with the same overflow and
+4 GiB-policy discipline as the full-Jones formula above, before any bank is allocated
+(`compute_family_bank_budget`).
+
+Because `--qer-distribution` is not a field of the effective-configuration fingerprint (see
+"Direct-QER stream" in [`SEED_POLICY.md`](SEED_POLICY.md)), the `infector_count` and susceptible
+banks are identical across all three families for the same category/overrides/seed: only the
+infector-side emission realization differs, between the 8-bank full-Jones path and the shared
+single direct-QER stream. Jones-fitted and Mikszewski profiles for the same otherwise-identical
+run therefore consume the same direct-bank LHS uniforms, transformed through each family's own
+`(mu_log10, sigma_log10)`.
+
 ## Stable assignment and evaluation
 
 A consumption ID packs an 8-bit bank ordinal into the high bits and a 56-bit bank index into the low bits:
@@ -136,3 +174,5 @@ CMake disables fast-math and floating-point contraction with `-fno-fast-math -ff
 The optional `risk-averse` infector policy samples the binomial distribution conditional on `X >= 1`. It uses the existing `infector_count` LHS stream exactly once per requested simulation and a conditional PPF in CDF space; it does not redraw zero-infector values and does not materialize an affine floating-point cutoff. The helper starts at count 1, handles `p=1` and `zero_mass==1` explicit branches, and records the zero mass and algorithm/branch provenance.
 
 The default `community` policy is unchanged and retains zero-infector rows. Risk-averse plans require `I0>=1` and `p>0`, have `n_zero=0`, `n_active=N`, and `K_total>=N`. The policy is an estimand change—conditional risk given at least one infector—not a joint LHS and not a custom category-input override.
+
+Infector policy (`community`/`risk-averse`) and QER family are resolved and validated independently: risk-averse conditioning changes only the infector-count plan (`n_zero`, `n_active`, `K_total`), not which bank layout a QER family uses. A risk-averse plan under a direct QER family still allocates exactly one direct-QER bank of length `K_total` (no Jones infector banks); under full Jones it still allocates the 8 infector banks. Every active row consumes exactly one direct QER draw or eight Jones draws, as appropriate, whether or not zero-infector rows exist.

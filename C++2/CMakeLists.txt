@@ -36,6 +36,7 @@ add_executable(ecai_cpp2
     src/simulation.cpp
     src/statistics.cpp
     src/cli.cpp
+    src/qer_direct.cpp
     src/output.cpp
     src/main.cpp
 )
@@ -97,17 +98,36 @@ target_include_directories(ecai_cpp2_distributions_tests PRIVATE include)
 add_test(NAME ecai_cpp2_distributions_tests COMMAND ecai_cpp2_distributions_tests)
 
 # Stage 6: binomial pre-sampling and exact draw-count plan (separate CTest
-# target; depends on lhs, seed_manager, and distributions).
+# target; depends on lhs, seed_manager, distributions, and qer_direct --
+# sampling_plan.cpp's package 3a family-aware path calls
+# qer_direct::sample_direct_qer_log10normal).
 add_executable(ecai_cpp2_sampling_plan_tests
     src/lhs.cpp
     src/seed_manager.cpp
     src/distributions.cpp
     src/sampling_plan.cpp
+    src/qer_direct.cpp
     tests/test_sampling_plan.cpp
 )
 target_include_directories(ecai_cpp2_sampling_plan_tests PRIVATE include)
 
 add_test(NAME ecai_cpp2_sampling_plan_tests COMMAND ecai_cpp2_sampling_plan_tests)
+
+# Package 3a: family-aware Stage 7 bank allocation and accounting (separate
+# CTest target; depends on lhs, seed_manager, distributions, category_data,
+# sampling_plan, and qer_direct for the direct-QER transform/tables).
+add_executable(ecai_cpp2_family_bank_allocation_tests
+    src/lhs.cpp
+    src/seed_manager.cpp
+    src/distributions.cpp
+    src/category_data.cpp
+    src/sampling_plan.cpp
+    src/qer_direct.cpp
+    tests/test_family_bank_allocation.cpp
+)
+target_include_directories(ecai_cpp2_family_bank_allocation_tests PRIVATE include)
+
+add_test(NAME ecai_cpp2_family_bank_allocation_tests COMMAND ecai_cpp2_family_bank_allocation_tests)
 
 # Stage 8: Jones QER calculation, a pure function of supplied sampled
 # infector values (separate CTest target; depends only on sampling_plan.h
@@ -133,6 +153,7 @@ add_executable(ecai_cpp2_simulation_tests
     src/distributions.cpp
     src/category_data.cpp
     src/sampling_plan.cpp
+    src/qer_direct.cpp
     src/model.cpp
     src/simulation.cpp
     src/statistics.cpp
@@ -146,6 +167,26 @@ target_compile_definitions(ecai_cpp2_simulation_tests PRIVATE
 
 add_test(NAME ecai_cpp2_simulation_tests COMMAND ecai_cpp2_simulation_tests)
 
+# Package 3b: direct-QER family integration into the Stage 10 ECAi/Probability
+# simulation loops (separate CTest target; links the same Stage 3-9 sources
+# as ecai_cpp2_simulation_tests, since it drives simulation.cpp's family-aware
+# entry point alongside the unmodified full-Jones one).
+add_executable(ecai_cpp2_qer_family_simulation_tests
+    src/lhs.cpp
+    src/seed_manager.cpp
+    src/distributions.cpp
+    src/category_data.cpp
+    src/sampling_plan.cpp
+    src/qer_direct.cpp
+    src/model.cpp
+    src/simulation.cpp
+    src/statistics.cpp
+    tests/test_qer_family_simulation.cpp
+)
+target_include_directories(ecai_cpp2_qer_family_simulation_tests PRIVATE include)
+
+add_test(NAME ecai_cpp2_qer_family_simulation_tests COMMAND ecai_cpp2_qer_family_simulation_tests)
+
 # Stage 11: across-replicate statistics (mean / sample SD / SE / Student-t CI
 # / raw min-max / ceiling-to-5 comparator) and the multi-replicate
 # orchestration entry point. Separate CTest target; links the Stage 3-10
@@ -156,6 +197,7 @@ add_executable(ecai_cpp2_statistics_tests
     src/distributions.cpp
     src/category_data.cpp
     src/sampling_plan.cpp
+    src/qer_direct.cpp
     src/model.cpp
     src/simulation.cpp
     src/statistics.cpp
@@ -183,6 +225,7 @@ add_executable(ecai_cpp2_cli_tests
     src/simulation.cpp
     src/statistics.cpp
     src/cli.cpp
+    src/qer_direct.cpp
     tests/test_cli.cpp
 )
 target_include_directories(ecai_cpp2_cli_tests PRIVATE include)
@@ -192,6 +235,44 @@ target_compile_definitions(ecai_cpp2_cli_tests PRIVATE
 add_dependencies(ecai_cpp2_cli_tests ecai_cpp2)
 
 add_test(NAME ecai_cpp2_cli_tests COMMAND ecai_cpp2_cli_tests)
+
+# Work package 2: --qer-distribution CLI selector parsing and the
+# ResolvedQerSelection descriptor resolve_run builds from it (separate CTest
+# target, independent of tests/test_cli.cpp; links the same Stage 3-11 plus
+# cli/qer_direct sources ecai_cpp2_cli_tests links, since resolve_run drives
+# the same category/sampling-plan resolution path).
+add_executable(ecai_cpp2_qer_cli_scenario_tests
+    src/lhs.cpp
+    src/seed_manager.cpp
+    src/distributions.cpp
+    src/category_data.cpp
+    src/sampling_plan.cpp
+    src/model.cpp
+    src/simulation.cpp
+    src/statistics.cpp
+    src/cli.cpp
+    src/qer_direct.cpp
+    tests/test_qer_cli_scenario.cpp
+)
+target_include_directories(ecai_cpp2_qer_cli_scenario_tests PRIVATE include)
+
+add_test(NAME ecai_cpp2_qer_cli_scenario_tests COMMAND ecai_cpp2_qer_cli_scenario_tests)
+
+# Package 3b: executable-level regression test proving --qer-distribution
+# actually propagates into the executed run (not merely into the CLI-layer
+# ResolvedQerSelection descriptor tests/test_qer_cli_scenario.cpp already
+# covers). Invokes the built ecai_cpp2 executable directly, like
+# ecai_cpp2_cli_tests's executable command matrix.
+add_executable(ecai_cpp2_qer_cli_executable_tests
+    tests/test_qer_cli_executable.cpp
+)
+target_include_directories(ecai_cpp2_qer_cli_executable_tests PRIVATE include)
+target_compile_definitions(ecai_cpp2_qer_cli_executable_tests PRIVATE
+    ECAI_CPP2_EXECUTABLE="$<TARGET_FILE:ecai_cpp2>"
+)
+add_dependencies(ecai_cpp2_qer_cli_executable_tests ecai_cpp2)
+
+add_test(NAME ecai_cpp2_qer_cli_executable_tests COMMAND ecai_cpp2_qer_cli_executable_tests)
 
 # Stage 13: metadata-grounded CSV composition and race-safe output writer.
 add_executable(ecai_cpp2_output_tests
@@ -204,6 +285,7 @@ add_executable(ecai_cpp2_output_tests
     src/simulation.cpp
     src/statistics.cpp
     src/cli.cpp
+    src/qer_direct.cpp
     src/output.cpp
     tests/test_output.cpp
 )
@@ -214,6 +296,19 @@ target_compile_definitions(ecai_cpp2_output_tests PRIVATE
 )
 add_dependencies(ecai_cpp2_output_tests ecai_cpp2)
 add_test(NAME ecai_cpp2_output_tests COMMAND ecai_cpp2_output_tests)
+
+# Work package 1: typed direct-QER family/profile selection and the
+# immutable Jones-fitted/Mikszewski parameter tables (separate CTest target;
+# depends only on distributions.h/.cpp for the shared log10-normal
+# transform, not on category_data/lhs/seed_manager/sampling_plan/model).
+add_executable(ecai_cpp2_qer_direct_tests
+    src/distributions.cpp
+    src/qer_direct.cpp
+    tests/test_qer_direct.cpp
+)
+target_include_directories(ecai_cpp2_qer_direct_tests PRIVATE include)
+
+add_test(NAME ecai_cpp2_qer_direct_tests COMMAND ecai_cpp2_qer_direct_tests)
 
 # Stage 14: bounded end-to-end scientific validation against reviewed fixtures.
 add_executable(ecai_cpp2_end_to_end_tests

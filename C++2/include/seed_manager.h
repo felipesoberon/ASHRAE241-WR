@@ -32,18 +32,27 @@ enum class StreamId : std::uint64_t {
     VF = 9,
     RTD = 10,
     DK = 11,
+
+    // Work package 2: an isolated direct-QER seed domain/stream identifier
+    // (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase 4), appended after
+    // the frozen full-Jones set above without renumbering or reusing any of
+    // it. This is the isolated direct-QER bank stream: it is consumed only
+    // by the direct-QER sampling bank and does not alter any of the eight
+    // full-Jones QER streams or any other existing stream.
+    direct_qer = 12,
 };
 
 // Exhaustive, ordered list of every currently defined StreamId. Used by
 // completeness/uniqueness tests and by nothing else; this is not a
 // dispatch table.
-inline constexpr std::array<StreamId, 12> kAllStreamIds = {
+inline constexpr std::array<StreamId, 13> kAllStreamIds = {
     StreamId::infector_count, StreamId::susceptible_pbr, StreamId::gamma,
     StreamId::lambda,         StreamId::infector_pbr,    StreamId::c_drop,
     StreamId::d_bar,          StreamId::E,               StreamId::GVL,
     StreamId::VF,             StreamId::RTD,             StreamId::DK,
+    StreamId::direct_qer,
 };
-static_assert(kAllStreamIds.size() == static_cast<std::size_t>(StreamId::DK) + 1,
+static_assert(kAllStreamIds.size() == static_cast<std::size_t>(StreamId::direct_qer) + 1,
               "kAllStreamIds must remain exhaustive for contiguous StreamId values");
 
 // Human-readable name for a stream id (its enumerator spelling). Throws

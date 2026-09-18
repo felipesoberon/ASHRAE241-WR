@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "cli.h"
+#include "qer_direct.h"
 #include "simulation.h"
 #include "output.h"
 
@@ -38,6 +39,17 @@ std::string program_name(int argc, char** argv) {
 const char* infector_policy_name(ecai_cpp2::simulation::InfectorPolicy policy) {
     return policy == ecai_cpp2::simulation::InfectorPolicy::risk_averse ? "risk_averse"
                                                                         : "community";
+}
+
+// Console-only convenience marker (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md
+// Phase 5): lets a human running the executable see at a glance which QER
+// family the run actually executed under, without opening the CSV. Reads
+// the resolved EffectiveScenario the run was executed with -- not the
+// CLI-layer ResolvedQerSelection descriptor -- so it reflects the family
+// simulation::resolve_scenario/run_replicate actually dispatched through.
+// Not part of any Stage 13 document/schema.
+std::string qer_family_name(ecai_cpp2::qer_direct::QerFamily family) {
+    return ecai_cpp2::qer_direct::to_string(family);
 }
 
 }  // namespace
@@ -93,6 +105,7 @@ int main(int argc, char** argv) {
                       << " ceiling_to_5_l_s_person=" << batch.summary.adjusted_ceiling_to_5_l_s_person;
         }
         std::cout << " infector_policy=" << infector_policy_name(run.scenario.infector_policy);
+        std::cout << " qer_family=" << qer_family_name(run.scenario.qer_family);
         if (written.paths.summary_requested) std::cout << " summary_file=\"" << written.paths.summary_path << "\"";
         if (written.paths.replicates_requested) std::cout << " replicates_file=\"" << written.paths.replicates_path << "\"";
         std::cout << "\n";

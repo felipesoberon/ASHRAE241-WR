@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "category_data.h"
+#include "qer_direct.h"
 #include "seed_manager.h"
 
 namespace ecai_cpp2 {
@@ -567,6 +568,211 @@ ReplicateAssignments assign_replicate(ParameterCursor& cursor, const SamplingPla
 // Convenience overload: constructs a fresh single-use cursor over `banks`
 // and traverses `plan` once.
 ReplicateAssignments assign_replicate(const ParameterBanks& banks, const SamplingPlan& plan);
+
+
+// ===================================================================
+// Package 3a: family-aware Stage 7 bank allocation and accounting.
+//
+// Extends Stage 7 so Jones-fitted and Mikszewski QER families (docs/
+// QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase 3) allocate only the 3
+// susceptible-sized banks plus one direct-QER bank of length K_total,
+// without allocating, seeding, or iterating the 8 full-Jones infector banks.
+// The full-Jones family continues to use build_parameter_banks/
+// ParameterBanks/ParameterCursor/assign_replicate above, byte-identically.
+// ===================================================================
+
+// The family-specific persistent-bank formula (Phase 3):
+//   Jones:                     N + 3*N_active + 8*K_total (delegates to
+//                               compute_bank_budget, unchanged).
+//   JonesFitted / Mikszewski:  N + 3*N_active + K_total, plus the transient
+//                               K_total-length LHS uniform buffer alive
+//                               alongside the direct-QER bank during its one
+//                               generation pass.
+// Checked once, here, before any bank is allocated; never re-checked in a
+// hot loop. Runs, in order:
+//   - `family` is not a declared qer_direct::QerFamily enumerator:
+//     std::invalid_argument.
+//   - n_active > n, k_total < n_active, or (n_active == 0 && k_total != 0):
+//     std::invalid_argument.
+//   - k_total > policy.max_total_infectors: std::runtime_error.
+//   - n, n_active, or k_total exceeding std::vector<double>::max_size():
+//     std::runtime_error.
+//   - checked combined-element and combined-byte (including the transient
+//     buffer noted above) arithmetic overflowing std::size_t, or the byte
+//     total exceeding policy.max_bytes: std::runtime_error.
+BankBudget compute_family_bank_budget(qer_direct::QerFamily family, std::size_t n,
+                                       std::size_t n_active, std::size_t k_total,
+                                       const ResourcePolicy& policy = ResourcePolicy{});
+
+// One exact-size direct-QER bank: length K_total, one LHS draw and one
+// qer_direct::sample_direct_qer_log10normal transform per realized infector,
+// generated exactly once. Meaningful only when the owning
+// FamilyParameterBanks' family is JonesFitted or Mikszewski; left default
+// (ungenerated, empty) for a Jones plan.
+struct DirectQerBank {
+    seed_manager::StreamId stream = seed_manager::StreamId::direct_qer;
+    std::uint64_t seed = 0;
+    bool generated = false;
+    std::vector<double> values;  // quanta/h, length K_total when generated.
+
+    // Stable id for one direct-bank value: its index (there is only ever one
+    // direct bank per replicate, so no bank-ordinal packing is needed).
+    // Throws std::out_of_range if index >= values.size().
+    std::uint64_t value_id(std::size_t index) const;
+};
+
+// The complete family-aware Stage 7 bank set for one (configuration,
+// replicate) pair. Exactly one of {infector_banks, direct_qer_bank} is ever
+// generated -- the other is left entirely default/ungenerated -- so no
+// unused Jones infector bank or direct-QER bank is ever materialized for the
+// wrong family.
+struct FamilyParameterBanks {
+    qer_direct::QerFamily family = qer_direct::QerFamily::Jones;
+    // The 3 susceptible-sized banks, in {susceptible_pbr, gamma, lambda}
+    // order, generated identically for every family (same seeds/order/values
+    // build_parameter_banks would produce for the same plan/category).
+    std::array<ParameterBank, 3> susceptible_banks{};
+    // The 8 full-Jones infector-sized banks, in {infector_pbr, c_drop, d_bar,
+    // E, GVL, VF, RTD, DK} order. Generated only when family == Jones; left
+    // default (ungenerated, empty banks) otherwise.
+    std::array<ParameterBank, 8> infector_banks{};
+    // The single direct-QER bank. Generated only when family != Jones; left
+    // default (ungenerated, empty) for a Jones plan.
+    DirectQerBank direct_qer_bank;
+    std::size_t n = 0;
+    std::size_t n_active = 0;
+    std::size_t k_total = 0;
+    BankBudget budget;
+};
+
+// Generates the family-aware Stage 7 banks for one completed Stage 6 plan.
+//
+// `family` selects the layout: Jones builds the 3 susceptible banks and the
+// 8 full-Jones infector banks exactly as build_parameter_banks does (same
+// seeds, order, and values for the same plan/category/replicate); JonesFitted
+// and Mikszewski build the 3 susceptible banks and exactly one direct-QER
+// bank of length K_total from `direct_params`, seeded from
+// seeds.derive_seed(config, replicate_index, StreamId::direct_qer, k_total),
+// and never construct, seed, or generate any of the 8 full-Jones infector
+// banks.
+//
+// Every check below runs before any bank is allocated:
+//   - `family` is not a declared qer_direct::QerFamily enumerator:
+//     std::invalid_argument (rejects an invalid/mixed-family request before
+//     any allocation).
+//   - family != Jones and direct_params has a nonfinite mu_log10 or a
+//     nonfinite/non-positive sigma_log10: std::invalid_argument.
+//   - plan.counts.size() != plan.n, or plan accounting disagreeing with a
+//     fresh summarize_counts(plan.counts): std::invalid_argument.
+//   - compute_family_bank_budget(family, plan.n, plan.n_active, plan.k_total,
+//     policy): propagates std::runtime_error on any overflow or ceiling
+//     overrun, leaving no partial bank output.
+// A zero-length bank (K_total == 0 for the direct bank, or N_active == 0 for
+// the susceptible banks) is left empty and ungenerated: no seed is derived
+// and no LHS list is generated for it.
+FamilyParameterBanks build_family_parameter_banks(
+    const seed_manager::SeedManager& seeds, const seed_manager::EffectiveConfig& config,
+    std::uint64_t replicate_index, const SamplingPlan& plan, const OccupancyCategory& category,
+    qer_direct::QerFamily family, const qer_direct::DirectQerParams& direct_params,
+    const ResourcePolicy& policy = ResourcePolicy{});
+
+// One realized infector's family-aware value: either its full eight Jones
+// parameters or its single direct QER value, never both.
+struct FamilyInfectorAssignment {
+    bool is_direct = false;
+    InfectorParameters jones;              // meaningful iff !is_direct
+    double direct_qer_quanta_per_h = 0.0;  // meaningful iff is_direct
+    std::size_t bank_index = 0;            // position consumed in the relevant bank(s)
+    std::uint64_t id = 0;                  // stable consumption id
+};
+
+// One simulation row under family-aware assignment. A zero-infector row
+// (infector_count == 0) has `active == false`, a default-valued
+// `susceptible`, and an empty `infectors`: it consumes nothing from any bank.
+struct FamilySimulationAssignment {
+    std::size_t simulation_index = 0;
+    long long infector_count = 0;
+    bool active = false;
+    SusceptibleParameters susceptible;
+    std::vector<FamilyInfectorAssignment> infectors;  // size == infector_count
+};
+
+// A completed, fully accounted family-aware traversal of one replicate.
+struct FamilyReplicateAssignments {
+    qer_direct::QerFamily family = qer_direct::QerFamily::Jones;
+    std::vector<FamilySimulationAssignment> simulations;
+    std::size_t n_active = 0;
+    std::size_t k_total = 0;
+    // Final cursor positions after a successful traversal: the susceptible
+    // cursor (all 3 susceptible banks advance together) and, depending on
+    // family, either the infector cursor (the 8 Jones banks, advancing
+    // together) or the direct cursor (the single direct-QER bank). The
+    // cursor not used by this plan's family stays 0.
+    std::size_t final_susceptible_cursor = 0;
+    std::size_t final_infector_cursor = 0;
+    std::size_t final_direct_cursor = 0;
+};
+
+// A single-use, forward-only, family-aware read cursor over one
+// FamilyParameterBanks. As with ParameterCursor there is no reset, rewind, or
+// refill: once handed out, a value can never be handed out again.
+class FamilyParameterCursor {
+public:
+    // `banks` must outlive the cursor; it is referenced, not copied.
+    explicit FamilyParameterCursor(const FamilyParameterBanks& banks) : banks_(&banks) {}
+
+    const FamilyParameterBanks& banks() const { return *banks_; }
+
+    // Consumes the next element of each of the 3 susceptible banks. Throws
+    // std::runtime_error on overrun.
+    SusceptibleParameters take_susceptible();
+
+    // Consumes the next element of each of the 8 Jones infector banks.
+    // Throws std::runtime_error if banks().family != Jones, or on overrun.
+    InfectorParameters take_jones_infector();
+
+    // Consumes the next element of the direct-QER bank. Throws
+    // std::runtime_error if banks().family == Jones, or on overrun.
+    double take_direct_infector();
+
+    // True when the susceptible cursor and the one family-relevant infector/
+    // direct cursor each equal their bank's length.
+    bool exhausted() const;
+
+    // Throws std::runtime_error naming the under-consumed bank group unless
+    // every family-relevant cursor exactly equals its bank's length -- the
+    // total-consumed-equals-allocated reconciliation.
+    void finalize() const;
+
+private:
+    friend FamilyReplicateAssignments assign_family_replicate(FamilyParameterCursor& cursor,
+                                                                const SamplingPlan& plan);
+    const FamilyParameterBanks* banks_;
+    std::size_t susceptible_cursor_ = 0;
+    std::size_t infector_cursor_ = 0;
+    std::size_t direct_cursor_ = 0;
+    bool traversal_started_ = false;
+};
+
+// Traverses `plan` in simulation order using `cursor`: a zero-infector row
+// consumes nothing; an active row consumes one susceptible draw followed by
+// counts[i] infector draws, dispatched once by banks().family (all Jones or
+// all direct within one traversal -- never mixed). Calls cursor.finalize()
+// afterwards, so a successful return proves every family-relevant cursor is
+// exactly exhausted.
+//
+// Throws std::invalid_argument if `plan` is internally inconsistent, or if
+// its n / n_active / k_total do not match the cursor's banks. Throws
+// std::runtime_error on any cursor overrun (including a second traversal of
+// the same cursor) or if the traversal ends with any relevant cursor short of
+// its bank length.
+FamilyReplicateAssignments assign_family_replicate(FamilyParameterCursor& cursor,
+                                                     const SamplingPlan& plan);
+
+// Convenience overload: constructs a fresh single-use cursor over `banks`
+// and traverses `plan` once.
+FamilyReplicateAssignments assign_family_replicate(const FamilyParameterBanks& banks,
+                                                     const SamplingPlan& plan);
 }  // namespace sampling_plan
 }  // namespace ecai_cpp2
 

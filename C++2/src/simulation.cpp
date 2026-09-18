@@ -81,6 +81,18 @@ void validate_infector_policy(InfectorPolicy policy) {
     throw std::invalid_argument("simulation: unknown InfectorPolicy");
 }
 
+// Rejects a QerFamily outside the declared enum before any scenario field is
+// trusted (same defensive pattern as validate_infector_policy above).
+void validate_qer_family(qer_direct::QerFamily family) {
+    switch (family) {
+        case qer_direct::QerFamily::Jones:
+        case qer_direct::QerFamily::JonesFitted:
+        case qer_direct::QerFamily::Mikszewski:
+            return;
+    }
+    throw std::invalid_argument("simulation: unknown QerFamily");
+}
+
 // Cross-checks the four inputs to run_replicate_from_plan before any bank is
 // built: config and scenario must name the same canonical category as the
 // supplied record, every config scientific/run input must equal the
@@ -175,6 +187,37 @@ void validate_scenario(const EffectiveScenario& scenario) {
                 "simulation: risk-averse infector policy requires community_infection_rate > 0");
         }
     }
+
+    // QER family/profile (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase
+    // 5): authoritative, applies to both output modes and both infector
+    // policies, and runs before any LHS generation or allocation. For the
+    // default Jones family, qer_mikszewski_profile must stay unset and
+    // qer_direct_params is not consulted (see EffectiveScenario::qer_family).
+    validate_qer_family(scenario.qer_family);
+    if (scenario.qer_family == qer_direct::QerFamily::Jones) {
+        if (scenario.qer_mikszewski_profile.has_value()) {
+            throw std::invalid_argument(
+                "simulation: a Jones-family scenario must not carry a resolved Mikszewski profile");
+        }
+    } else {
+        if (!std::isfinite(scenario.qer_direct_params.mu_log10) ||
+            !std::isfinite(scenario.qer_direct_params.sigma_log10) ||
+            !(scenario.qer_direct_params.sigma_log10 > 0.0)) {
+            throw std::invalid_argument(
+                "simulation: a direct-QER-family scenario requires a finite mu_log10 and a finite, "
+                "positive sigma_log10");
+        }
+        if (scenario.qer_family == qer_direct::QerFamily::Mikszewski &&
+            !scenario.qer_mikszewski_profile.has_value()) {
+            throw std::invalid_argument(
+                "simulation: a Mikszewski-family scenario requires a resolved profile");
+        }
+        if (scenario.qer_family == qer_direct::QerFamily::JonesFitted &&
+            scenario.qer_mikszewski_profile.has_value()) {
+            throw std::invalid_argument(
+                "simulation: a Jones-fitted scenario must not carry a resolved Mikszewski profile");
+        }
+    }
 }
 
 // Rejects a malformed plan before any work: the same accounting contract
@@ -205,6 +248,32 @@ void validate_banks(const sampling_plan::SamplingPlan& plan,
             throw std::invalid_argument("simulation: bank " + sampling_plan::bank_id_name(id) +
                                          " has the wrong planned length");
         }
+    }
+}
+
+// Rejects family-aware banks that were not sized for this plan, or that name
+// a different family than the scenario, before any work (package 3b's
+// counterpart of validate_banks above).
+void validate_family_banks(const sampling_plan::SamplingPlan& plan,
+                            const sampling_plan::FamilyParameterBanks& banks,
+                            qer_direct::QerFamily expected_family) {
+    if (banks.family != expected_family) {
+        throw std::invalid_argument(
+            "simulation: parameter banks were built for a different QER family than the scenario "
+            "names");
+    }
+    if (banks.n != plan.n || banks.n_active != plan.n_active || banks.k_total != plan.k_total) {
+        throw std::invalid_argument(
+            "simulation: family parameter banks were not sized for this sampling plan");
+    }
+    for (const sampling_plan::ParameterBank& bank : banks.susceptible_banks) {
+        if (bank.values.size() != plan.n_active) {
+            throw std::invalid_argument(
+                "simulation: a susceptible bank has the wrong planned length");
+        }
+    }
+    if (banks.direct_qer_bank.values.size() != plan.k_total) {
+        throw std::invalid_argument("simulation: the direct-QER bank has the wrong planned length");
     }
 }
 
@@ -261,6 +330,56 @@ void evaluate_probability_schedule(const std::vector<std::size_t>& schedule,
         qer_per_h.reserve(simulation.infectors.size());
         for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
             qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
+            ++result.counters.qer_evaluations;
+        }
+
+        inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+        inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+        inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+        const model::ProbabilityResult probability = model::compute_probability(inputs, qer_per_h);
+        ++result.counters.probability_evaluations;
+        if (probability.saturated) {
+            ++result.counters.saturated_count;
+        }
+        if (!std::isfinite(probability.probability)) {
+            throw std::runtime_error(
+                "simulation: a nonfinite probability was produced at simulation " +
+                std::to_string(row));
+        }
+        result.probability[row] = probability.probability;
+        if (options.collect_audit) {
+            RowAudit& audit_row = result.audit.rows[row];
+            audit_row.qer_sum_per_h = probability.qer_sum_per_h;
+            audit_row.probability = probability.probability;
+            audit_row.saturated = probability.saturated;
+        }
+    }
+}
+
+// Package 3b's direct-QER counterpart of evaluate_probability_schedule above:
+// row loop and scratch-vector reuse are identical; the only difference is
+// that each infector's QER comes directly from
+// FamilyInfectorAssignment::direct_qer_quanta_per_h -- already computed once
+// when the direct-QER bank was generated -- rather than from
+// model::compute_qer(InfectorParameters).
+void evaluate_family_probability_schedule(const std::vector<std::size_t>& schedule,
+                                           const sampling_plan::FamilyReplicateAssignments& assignments,
+                                           const EffectiveScenario& scenario,
+                                           const ReplicateOptions& options, ReplicateResult& result) {
+    std::vector<double> qer_per_h;
+    model::ProbabilityInputs inputs;
+    inputs.volume_m3 = scenario.volume_m3;
+    inputs.occupants = scenario.occupants;
+    inputs.mask_efficiency = scenario.mask_efficiency;
+    inputs.duration_h = scenario.duration_hours;
+    inputs.input_ecai_l_s_person = scenario.input_ecai_l_s_person;
+    for (const std::size_t row : schedule) {
+        const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
+        qer_per_h.clear();
+        qer_per_h.reserve(simulation.infectors.size());
+        for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
+            qer_per_h.push_back(infector.direct_qer_quanta_per_h);
             ++result.counters.qer_evaluations;
         }
 
@@ -376,6 +495,17 @@ EffectiveScenario resolve_scenario(const OccupancyCategory& category,
     // consumer; nothing branches on a raw CLI flag (Phase 3).
     scenario.infector_policy = overrides.infector_policy;
     scenario.infector_policy_explicit = overrides.infector_policy_explicit;
+
+    // Resolved once here, and forwarded unchanged to every downstream
+    // consumer, mirroring infector_policy above (docs/QER_DISTRIBUTION_
+    // IMPLEMENTATION_PLAN.md Phase 5). qer_direct_params/qer_mikszewski_
+    // profile are copied through as supplied -- resolve_scenario performs no
+    // qer_direct table lookup itself; that already happened once, in the CLI
+    // layer, through the work package 1 API.
+    scenario.qer_family = overrides.qer_family;
+    scenario.qer_family_explicit = overrides.qer_family_explicit;
+    scenario.qer_mikszewski_profile = overrides.qer_mikszewski_profile;
+    scenario.qer_direct_params = overrides.qer_direct_params;
 
     scenario.occupants_overridden = overrides.occupants.has_value();
     scenario.volume_overridden = overrides.volume_m3.has_value();
@@ -593,6 +723,167 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     return result;
 }
 
+ReplicateResult run_replicate_from_family_banks(const sampling_plan::SamplingPlan& plan,
+                                                 const sampling_plan::FamilyParameterBanks& banks,
+                                                 const EffectiveScenario& scenario,
+                                                 const ReplicateOptions& options) {
+    // --- Every rejection happens before the output vector is allocated. ---
+    validate_scenario(scenario);
+    validate_plan(plan);
+    sampling_plan::validate_plan_policy_context(
+        plan, static_cast<sampling_plan::InfectorPolicy>(scenario.infector_policy),
+        options.policy);
+    validate_family_banks(plan, banks, scenario.qer_family);
+    if (scenario.simulations_n != plan.n) {
+        throw std::invalid_argument(
+            "simulation: the scenario's simulation count disagrees with the plan's N");
+    }
+    validate_evaluation_order(options.evaluation_order);
+
+    ReplicateResult result;
+    result.mode = scenario.mode;
+    result.infector_policy = scenario.infector_policy;
+    result.percentile = scenario.percentile;
+    result.counters.n = plan.n;
+    result.infector_counts = plan.counts;
+
+    // Step 1: every zero-infector row becomes exactly +0.0 before any
+    // assignment or model input is requested (MODEL_SPECIFICATION.md 11.1,
+    // D3), identically to run_replicate_from_banks.
+    std::vector<double>& outputs =
+        (scenario.mode == OutputMode::probability) ? result.probability : result.ecai_l_s_person;
+    outputs.assign(plan.n, 0.0);
+    for (std::size_t i = 0; i < plan.counts.size(); ++i) {
+        if (plan.counts[i] == 0) {
+            ++result.counters.zero_infector_count;
+        }
+    }
+
+    // Step 2: materialize the full simulation/person -> value mapping in
+    // stable simulation index order, before any equation runs. Every
+    // infector here is direct-sourced: banks.family != Jones, so
+    // assign_family_replicate never constructs an InfectorParameters or
+    // calls model::compute_qer.
+    const sampling_plan::FamilyReplicateAssignments assignments =
+        sampling_plan::assign_family_replicate(banks, plan);
+    if (assignments.simulations.size() != plan.n) {
+        throw std::runtime_error("simulation: the assignment did not cover every simulation");
+    }
+    result.counters.active_count = assignments.n_active;
+    result.counters.k_total = assignments.k_total;
+
+    result.audit_collected = options.collect_audit;
+    if (options.collect_audit) {
+        result.audit.rows.resize(plan.n);
+    }
+    std::vector<std::size_t> active_indices;
+    active_indices.reserve(assignments.n_active);
+    for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+        const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
+        if (simulation.simulation_index != row) {
+            throw std::runtime_error("simulation: assignments are not in simulation index order");
+        }
+        if (options.collect_audit) {
+            RowAudit& audit_row = result.audit.rows[row];
+            audit_row.simulation_index = row;
+            audit_row.infector_count = simulation.infector_count;
+            audit_row.active = simulation.active;
+        }
+        if (!simulation.active) {
+            continue;
+        }
+        active_indices.push_back(row);
+        result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+        // One direct-QER value per infector, not eight: the direct-family
+        // persistent-bank formula is N + 3*N_active + K_total, not
+        // N + 3*N_active + 8*K_total (docs/QER_DISTRIBUTION_IMPLEMENTATION_
+        // PLAN.md Phase 3).
+        result.counters.infector_values_consumed += simulation.infectors.size();
+        if (options.collect_audit) {
+            RowAudit& audit_row = result.audit.rows[row];
+            audit_row.susceptible_ids = simulation.susceptible.ids;
+            for (const std::uint64_t id : simulation.susceptible.ids) {
+                result.audit.consumption_ids.push_back(id);
+            }
+            for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
+                result.audit.consumption_ids.push_back(infector.id);
+            }
+        }
+    }
+
+    // Step 3: evaluate the active rows on the requested schedule, writing
+    // each result back to its own stable simulation index.
+    const std::vector<std::size_t> schedule =
+        build_schedule(active_indices, options.evaluation_order);
+    if (options.collect_audit) {
+        result.audit.evaluation_order = schedule;
+    }
+    if (scenario.mode == OutputMode::ecai) {
+        std::vector<double> qer_per_h;
+        model::ECAiInputs inputs;
+        inputs.volume_m3 = scenario.volume_m3;
+        inputs.occupants = scenario.occupants;
+        inputs.mask_efficiency = scenario.mask_efficiency;
+        inputs.duration_h = scenario.duration_hours;
+        inputs.target_probability = scenario.target_probability;
+        for (const std::size_t row : schedule) {
+            const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
+            qer_per_h.clear();
+            qer_per_h.reserve(simulation.infectors.size());
+            for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
+                qer_per_h.push_back(infector.direct_qer_quanta_per_h);
+                ++result.counters.qer_evaluations;
+            }
+
+            inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+            inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+            inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+            const model::ECAiResult ecai = model::compute_ecai(inputs, qer_per_h);
+            ++result.counters.ecai_evaluations;
+            if (ecai.clamped) {
+                ++result.counters.negative_clamp_count;
+            }
+            if (!std::isfinite(ecai.ecai_l_s_person)) {
+                throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
+                                          std::to_string(row));
+            }
+            result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
+            if (options.collect_audit) {
+                RowAudit& audit_row = result.audit.rows[row];
+                audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
+                audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
+                audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
+                audit_row.clamped = ecai.clamped;
+            }
+        }
+    } else {
+        evaluate_family_probability_schedule(schedule, assignments, scenario, options, result);
+    }
+
+    for (const double value : outputs) {
+        if (value == 0.0) {
+            ++result.counters.output_zero_count;
+        }
+    }
+
+    // Cursor reconciliation: assign_family_replicate already called
+    // finalize(), so this records the proof rather than establishing it. The
+    // 11-entry Jones-BankId-indexed arrays below do not describe a direct-
+    // family bank layout (there is no per-BankId direct-QER bank), so they
+    // are deliberately left at their default (all-zero/false) values rather
+    // than force-fit a non-Jones layout into them.
+    result.cursors_exhausted = true;
+
+    // Step 4: the frozen percentile, from a sorted copy.
+    if (scenario.mode == OutputMode::probability) {
+        result.percentile_probability = percentile_linear(outputs, scenario.percentile);
+    } else {
+        result.percentile_l_s_person = percentile_linear(outputs, scenario.percentile);
+    }
+    return result;
+}
+
 ReplicateResult run_replicate_from_plan(const seed_manager::SeedManager& seeds,
                                          const seed_manager::EffectiveConfig& config,
                                          std::uint64_t replicate_index,
@@ -613,11 +904,25 @@ ReplicateResult run_replicate_from_plan(const seed_manager::SeedManager& seeds,
         plan, static_cast<sampling_plan::InfectorPolicy>(scenario.infector_policy),
         options.policy);
     validate_plan_context(config, category, scenario, plan);
+    // Branch once, after plan construction (docs/QER_DISTRIBUTION_
+    // IMPLEMENTATION_PLAN.md Phase 5): full Jones keeps its existing,
+    // byte-identical build_parameter_banks/run_replicate_from_banks path.
+    // Jones-fitted and Mikszewski dispatch through the family-aware bank
+    // builder and run_replicate_from_family_banks instead, and never
+    // construct an InfectorParameters or call the full-Jones compute_qer().
     // The banks live only for this call: they are destroyed on return, so no
     // caller can re-read, re-extend, or re-traverse them.
-    const sampling_plan::ParameterBanks banks = sampling_plan::build_parameter_banks(
-        seeds, config, replicate_index, plan, category, options.policy);
-    ReplicateResult result = run_replicate_from_banks(plan, banks, scenario, options);
+    if (scenario.qer_family == qer_direct::QerFamily::Jones) {
+        const sampling_plan::ParameterBanks banks = sampling_plan::build_parameter_banks(
+            seeds, config, replicate_index, plan, category, options.policy);
+        ReplicateResult result = run_replicate_from_banks(plan, banks, scenario, options);
+        result.replicate_index = replicate_index;
+        return result;
+    }
+    const sampling_plan::FamilyParameterBanks banks = sampling_plan::build_family_parameter_banks(
+        seeds, config, replicate_index, plan, category, scenario.qer_family,
+        scenario.qer_direct_params, options.policy);
+    ReplicateResult result = run_replicate_from_family_banks(plan, banks, scenario, options);
     result.replicate_index = replicate_index;
     return result;
 }

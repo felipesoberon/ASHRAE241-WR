@@ -119,6 +119,44 @@ std::size_t checked_multiply(std::size_t left, std::size_t right, const char* na
     return left * right;
 }
 
+// Infector-side consumption and Jones-BankId-indexed layout differ by QER
+// family (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase 3/6): full Jones
+// consumes 8 values per infector across its 11 BankId-indexed banks; the
+// direct-QER families (JonesFitted, Mikszewski) consume exactly 1 value per
+// infector from a single direct-QER bank that has no per-BankId
+// representation, so run_replicate_from_family_banks deliberately leaves
+// planned_bank_lengths/final_cursors/bank_generated at their zero/false
+// defaults (see simulation.h's ReplicateResult comment). This check is not a
+// new output schema or document field: it only fixes the existing
+// consumption/layout invariant so it accepts both already-implemented family
+// paths instead of hard-assuming full Jones.
+void require_family_bank_consumption(const simulation::ReplicateResult& replicate,
+                                      const simulation::ReplicateCounters& counters,
+                                      qer_direct::QerFamily qer_family) {
+    if (qer_family == qer_direct::QerFamily::Jones) {
+        require(counters.infector_values_consumed ==
+                    checked_multiply(8, counters.k_total, "infector"),
+                "infector consumption mismatch");
+        for (std::size_t bank = 0; bank < 11; ++bank) {
+            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
+            require(replicate.planned_bank_lengths[bank] == expected,
+                    "planned bank length mismatch");
+            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
+            require(replicate.bank_generated[bank] == (expected > 0),
+                    "generated-bank flag mismatch");
+        }
+    } else {
+        require(counters.infector_values_consumed == counters.k_total,
+                "infector consumption mismatch");
+        for (std::size_t bank = 0; bank < 11; ++bank) {
+            require(replicate.planned_bank_lengths[bank] == 0 &&
+                        replicate.final_cursors[bank] == 0 && !replicate.bank_generated[bank],
+                    "direct-family replicate unexpectedly populated a Jones-BankId-indexed bank "
+                    "field");
+        }
+    }
+}
+
 std::string absolute_path(const std::string& raw) {
     require(!raw.empty(), "output path is empty");
     for (const unsigned char ch : raw)
@@ -488,6 +526,50 @@ void validate_stage13_document(const OutputDocument& document) {
     require(!document.summary_columns.empty() && document.summary_columns[0] == "schema_version" &&
                 !document.summary_rows[0].empty(),
             "summary schema missing a leading schema_version column/value");
+    if (document.summary_rows[0][0] == kDirectOutputSchemaVersion ||
+        document.summary_rows[0][0] == kDirectProbabilitySchemaVersion ||
+        document.summary_rows[0][0] == kDirectRiskAverseSchemaVersion ||
+        document.summary_rows[0][0] == kDirectRiskAverseProbabilitySchemaVersion) {
+        const bool direct_probability = document.summary_rows[0][0] == kDirectProbabilitySchemaVersion ||
+                                        document.summary_rows[0][0] ==
+                                            kDirectRiskAverseProbabilitySchemaVersion;
+        const bool direct_risk_averse = document.summary_rows[0][0] == kDirectRiskAverseSchemaVersion ||
+                                        document.summary_rows[0][0] ==
+                                            kDirectRiskAverseProbabilitySchemaVersion;
+        const std::size_t expected_summary_width =
+            direct_risk_averse ? (direct_probability ? 112 : 105)
+                               : (direct_probability ? 105 : 98);
+        const std::size_t expected_replicate_width =
+            direct_risk_averse ? (direct_probability ? 31 : 30)
+                               : (direct_probability ? 29 : 28);
+        require(document.summary_columns.size() == expected_summary_width &&
+                    document.replicate_columns.size() == expected_replicate_width,
+                "direct-QER schema width changed");
+        const std::vector<std::string> suffix = {
+            "qer_family", "qer_profile", "qer_parameter_table_version", "qer_mu_log10",
+            "qer_sigma_log10", "qer_transform", "qer_units", "qer_direct_bank", "qer_seed_policy"};
+        for (std::size_t i = 0; i < suffix.size(); ++i) {
+            require(document.summary_columns[document.summary_columns.size() - suffix.size() + i] ==
+                        suffix[i],
+                    "direct-QER summary provenance column order changed");
+            require(document.replicate_columns[document.replicate_columns.size() - suffix.size() + i] ==
+                        suffix[i],
+                    "direct-QER replicate provenance column order changed");
+        }
+        validate_document(document);
+        const auto summary_index = [&](const char* name) {
+            return column_index(document.summary_columns, name);
+        };
+        const auto replicate_count = parse_size(
+            document.summary_rows[0][summary_index("replicates_r")], "replicates_r");
+        require(document.replicate_rows.size() == replicate_count,
+                "direct-QER replicate rows disagree with summary replicate count");
+        require(document.summary_rows[0][summary_index("comparator_eligible")] == "false" &&
+                    document.summary_rows[0][summary_index("comparator_status")] ==
+                        "NOT_APPLICABLE_QER_FAMILY",
+                "direct-QER comparator must be suppressed");
+        return;
+    }
     if (document.summary_rows[0][0] == kProbabilitySchemaVersion) {
         validate_probability_stage13_document(document);
         return;
@@ -612,6 +694,14 @@ void require_same_run(const cli::ResolvedRun& supplied, const cli::ResolvedRun& 
                 ls.mask_efficiency_overridden == rs.mask_efficiency_overridden &&
                 ls.community_infection_rate_overridden == rs.community_infection_rate_overridden &&
                 ls.custom_scenario == rs.custom_scenario && ls.mode == rs.mode &&
+                ls.qer_family == rs.qer_family &&
+                ls.qer_mikszewski_profile.has_value() == rs.qer_mikszewski_profile.has_value() &&
+                (!ls.qer_mikszewski_profile ||
+                 (ls.qer_mikszewski_profile->organism == rs.qer_mikszewski_profile->organism &&
+                  ls.qer_mikszewski_profile->activity == rs.qer_mikszewski_profile->activity)) &&
+                ls.qer_direct_params.mu_log10 == rs.qer_direct_params.mu_log10 &&
+                ls.qer_direct_params.sigma_log10 == rs.qer_direct_params.sigma_log10 &&
+                ls.qer_family_explicit == rs.qer_family_explicit &&
                 same_double(ls.input_ecai_l_s_person, rs.input_ecai_l_s_person) &&
                 ls.input_ecai_overridden == rs.input_ecai_overridden &&
                 ls.infector_policy == rs.infector_policy &&
@@ -691,6 +781,55 @@ std::string serialize_replicates_csv(const OutputDocument& document) {
     return serialize(document.replicate_columns, document.replicate_rows);
 }
 
+OutputDocument decorate_direct_qer_document(OutputDocument document,
+                                            const cli::ResolvedRun& run) {
+    require(run.scenario.qer_family != qer_direct::QerFamily::Jones,
+            "direct-QER decoration requires a direct family");
+    const bool probability = run.scenario.mode == simulation::OutputMode::probability;
+    const bool risk_averse = run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse;
+    if (risk_averse) {
+        document.summary_rows[0][0] = probability ? kDirectRiskAverseProbabilitySchemaVersion
+                                                    : kDirectRiskAverseSchemaVersion;
+    } else {
+        document.summary_rows[0][0] = probability ? kDirectProbabilitySchemaVersion
+                                                    : kDirectOutputSchemaVersion;
+    }
+
+    const std::string family = qer_direct::to_string(run.scenario.qer_family);
+    const std::string profile = run.scenario.qer_mikszewski_profile
+                                    ? qer_direct::canonical_mikszewski_profile_name(
+                                          *run.scenario.qer_mikszewski_profile)
+                                    : "";
+    const std::string table_version = run.scenario.qer_family == qer_direct::QerFamily::Mikszewski
+                                          ? qer_direct::kMikszewskiTableVersion
+                                          : qer_direct::kJonesFittedTableVersion;
+    const std::vector<std::string> provenance = {
+        family,
+        profile,
+        table_version,
+        format_double(run.scenario.qer_direct_params.mu_log10),
+        format_double(run.scenario.qer_direct_params.sigma_log10),
+        "10**(mu_log10+sigma_log10*normal_ppf(u))",
+        "quanta/h per infector",
+        "direct-qer-bank-v1;stream=direct_qer;layout=K_total",
+        seed_manager::kSeedPolicyVersion};
+    const std::vector<std::string> suffix = {
+        "qer_family", "qer_profile", "qer_parameter_table_version", "qer_mu_log10",
+        "qer_sigma_log10", "qer_transform", "qer_units", "qer_direct_bank", "qer_seed_policy"};
+    const auto summary_index = [&](const char* name) {
+        return column_index(document.summary_columns, name);
+    };
+    document.summary_rows[0][summary_index("comparator_eligible")] = "false";
+    document.summary_rows[0][summary_index("comparator_status")] = "NOT_APPLICABLE_QER_FAMILY";
+    document.summary_columns.insert(document.summary_columns.end(), suffix.begin(), suffix.end());
+    document.replicate_columns.insert(document.replicate_columns.end(), suffix.begin(), suffix.end());
+    document.summary_rows[0].insert(document.summary_rows[0].end(), provenance.begin(), provenance.end());
+    for (auto& row : document.replicate_rows)
+        row.insert(row.end(), provenance.begin(), provenance.end());
+    validate_stage13_document(document);
+    return document;
+}
+
 OutputDocument build_probability_document(const cli::ResolvedRun& run,
                                           const simulation::ReplicateBatch& batch,
                                           const cli::CliOptions& options);
@@ -705,21 +844,26 @@ OutputDocument build_document(const cli::ResolvedRun& run,
                               const simulation::ReplicateBatch& batch,
                               const cli::CliOptions& options,
                               const std::string&) {
-    // Infector policy is dispatched independently of output mode
-    // (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 6): a risk-averse run
-    // never falls through to the two community builders below, in either
-    // mode, so the community/probability schemas and their serialized bytes
-    // are completely unaffected by this branch's existence.
+    // Infector policy is dispatched independently of output mode.
     if (run.scenario.infector_policy == simulation::InfectorPolicy::risk_averse) {
         if (run.scenario.mode == simulation::OutputMode::probability) {
-            return build_risk_averse_probability_document(run, batch, options);
+            return run.scenario.qer_family == qer_direct::QerFamily::Jones
+                       ? build_risk_averse_probability_document(run, batch, options)
+                       : decorate_direct_qer_document(
+                             build_risk_averse_probability_document(run, batch, options), run);
         }
         require(run.overrides.mode == simulation::OutputMode::ecai,
                 "risk-averse ECAi document requested for a non-ECAi batch");
-        return build_risk_averse_document(run, batch, options);
+        OutputDocument document = build_risk_averse_document(run, batch, options);
+        return run.scenario.qer_family == qer_direct::QerFamily::Jones
+                   ? document
+                   : decorate_direct_qer_document(std::move(document), run);
     }
     if (run.scenario.mode == simulation::OutputMode::probability) {
-        return build_probability_document(run, batch, options);
+        OutputDocument document = build_probability_document(run, batch, options);
+        return run.scenario.qer_family == qer_direct::QerFamily::Jones
+                   ? document
+                   : decorate_direct_qer_document(std::move(document), run);
     }
     require(run.overrides.mode == simulation::OutputMode::ecai,
             "ECAi document requested for a non-ECAi batch");
@@ -836,17 +980,7 @@ OutputDocument build_document(const cli::ResolvedRun& run,
         require(counters.susceptible_values_consumed ==
                     checked_multiply(3, counters.active_count, "susceptible"),
                 "susceptible consumption mismatch");
-        require(counters.infector_values_consumed ==
-                    checked_multiply(8, counters.k_total, "infector"),
-                "infector consumption mismatch");
-        for (std::size_t bank = 0; bank < 11; ++bank) {
-            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
-            require(replicate.planned_bank_lengths[bank] == expected,
-                    "planned bank length mismatch");
-            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
-            require(replicate.bank_generated[bank] == (expected > 0),
-                    "generated-bank flag mismatch");
-        }
+        require_family_bank_consumption(replicate, counters, scenario.qer_family);
         require(replicate.cursors_exhausted, "replicate cursors are not exhausted");
         const double percentile =
             simulation::percentile_linear(replicate.ecai_l_s_person, scenario.percentile);
@@ -961,7 +1095,9 @@ OutputDocument build_document(const cli::ResolvedRun& run,
             bank_sizes(replicate.planned_bank_lengths), bank_sizes(replicate.final_cursors),
             "true", "true", "true", std::to_string(batch.replicates.size())});
     }
-    return document;
+    if (run.scenario.qer_family == qer_direct::QerFamily::Jones)
+        return document;
+    return decorate_direct_qer_document(std::move(document), run);
 }
 
 OutputDocument build_probability_document(const cli::ResolvedRun& run,
@@ -1092,17 +1228,7 @@ OutputDocument build_probability_document(const cli::ResolvedRun& run,
         require(counters.susceptible_values_consumed ==
                     checked_multiply(3, counters.active_count, "susceptible"),
                 "susceptible consumption mismatch");
-        require(counters.infector_values_consumed ==
-                    checked_multiply(8, counters.k_total, "infector"),
-                "infector consumption mismatch");
-        for (std::size_t bank = 0; bank < 11; ++bank) {
-            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
-            require(replicate.planned_bank_lengths[bank] == expected,
-                    "planned bank length mismatch");
-            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
-            require(replicate.bank_generated[bank] == (expected > 0),
-                    "generated-bank flag mismatch");
-        }
+        require_family_bank_consumption(replicate, counters, scenario.qer_family);
         require(replicate.cursors_exhausted, "replicate cursors are not exhausted");
         const double percentile =
             simulation::percentile_linear(replicate.probability, scenario.percentile);
@@ -1370,17 +1496,7 @@ OutputDocument build_risk_averse_document(const cli::ResolvedRun& run,
         require(counters.susceptible_values_consumed ==
                     checked_multiply(3, counters.active_count, "susceptible"),
                 "susceptible consumption mismatch");
-        require(counters.infector_values_consumed ==
-                    checked_multiply(8, counters.k_total, "infector"),
-                "infector consumption mismatch");
-        for (std::size_t bank = 0; bank < 11; ++bank) {
-            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
-            require(replicate.planned_bank_lengths[bank] == expected,
-                    "planned bank length mismatch");
-            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
-            require(replicate.bank_generated[bank] == (expected > 0),
-                    "generated-bank flag mismatch");
-        }
+        require_family_bank_consumption(replicate, counters, scenario.qer_family);
         require(replicate.cursors_exhausted, "replicate cursors are not exhausted");
         const double percentile =
             simulation::percentile_linear(replicate.ecai_l_s_person, scenario.percentile);
@@ -1662,17 +1778,7 @@ OutputDocument build_risk_averse_probability_document(const cli::ResolvedRun& ru
         require(counters.susceptible_values_consumed ==
                     checked_multiply(3, counters.active_count, "susceptible"),
                 "susceptible consumption mismatch");
-        require(counters.infector_values_consumed ==
-                    checked_multiply(8, counters.k_total, "infector"),
-                "infector consumption mismatch");
-        for (std::size_t bank = 0; bank < 11; ++bank) {
-            const std::size_t expected = bank < 3 ? counters.active_count : counters.k_total;
-            require(replicate.planned_bank_lengths[bank] == expected,
-                    "planned bank length mismatch");
-            require(replicate.final_cursors[bank] == expected, "final bank cursor mismatch");
-            require(replicate.bank_generated[bank] == (expected > 0),
-                    "generated-bank flag mismatch");
-        }
+        require_family_bank_consumption(replicate, counters, scenario.qer_family);
         require(replicate.cursors_exhausted, "replicate cursors are not exhausted");
         const double percentile =
             simulation::percentile_linear(replicate.probability, scenario.percentile);

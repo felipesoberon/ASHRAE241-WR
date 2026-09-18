@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "category_data.h"
+#include "qer_direct.h"
 #include "sampling_plan.h"
 #include "seed_manager.h"
 #include "statistics.h"
@@ -118,6 +119,21 @@ struct EffectiveScenario {
     // override (Phase 5).
     InfectorPolicy infector_policy = InfectorPolicy::community;
     bool infector_policy_explicit = false;
+
+    // QER family/profile (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase
+    // 5, work package 3b), resolved once here from the CLI/scenario layer and
+    // never re-derived from a raw flag by any downstream consumer. `Jones`
+    // (the full mechanistic calculation) is the default, so a value-
+    // initialized scenario keeps the unchanged existing behavior. `direct_
+    // params` and `qer_mikszewski_profile` are meaningful only when
+    // `qer_family != Jones`; for the default Jones family they stay at their
+    // zero-initialized/empty defaults and must not be read, matching
+    // qer_direct::DirectQerParams's own "meaningful only for a direct family"
+    // convention (see include/qer_direct.h).
+    qer_direct::QerFamily qer_family = qer_direct::QerFamily::Jones;
+    bool qer_family_explicit = false;
+    std::optional<qer_direct::MikszewskiProfile> qer_mikszewski_profile;
+    qer_direct::DirectQerParams qer_direct_params{};
 };
 
 // The four category scientific inputs a run may override. An unset optional
@@ -140,6 +156,16 @@ struct EffectiveOverrides {
     // provenance; see EffectiveScenario::infector_policy above.
     InfectorPolicy infector_policy = InfectorPolicy::community;
     bool infector_policy_explicit = false;
+
+    // QER family/profile override; see EffectiveScenario::qer_family above.
+    // `qer_direct_params` is supplied by the caller already resolved (the CLI
+    // layer resolves it once through the work package 1 qer_direct table
+    // lookups); resolve_scenario copies it through unchanged rather than
+    // repeating the lookup.
+    qer_direct::QerFamily qer_family = qer_direct::QerFamily::Jones;
+    bool qer_family_explicit = false;
+    std::optional<qer_direct::MikszewskiProfile> qer_mikszewski_profile;
+    qer_direct::DirectQerParams qer_direct_params{};
 };
 
 // Resolves the category record plus explicit overrides into one scenario,
@@ -333,6 +359,38 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
                                           const sampling_plan::ParameterBanks& banks,
                                           const EffectiveScenario& scenario,
                                           const ReplicateOptions& options = ReplicateOptions{});
+
+// Package 3b: the direct-QER family counterpart of run_replicate_from_banks
+// above (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md Phase 5). Used only for
+// `scenario.qer_family != qer_direct::QerFamily::Jones`: every realized
+// infector's QER is taken directly from `banks`' precomputed direct-QER bank,
+// in infector-list order, exactly once -- never via model::compute_qer, and
+// never by constructing a sampling_plan::InfectorParameters. The full-Jones
+// path above is unaffected by this function's existence and remains the sole
+// dispatch for `qer_family == Jones`.
+//
+// Preserves, identically to run_replicate_from_banks: the zero-infector
+// short-circuit to exactly +0.0 (section 11.1 D3), stable simulation-index
+// output order, the QER summation order within a row, probability
+// saturation, ECAi's +0.0 normalization and negative-value clamping, and the
+// community/risk-averse infector-count semantics (community may contain
+// zero-infector rows; risk-averse has N_active == N and no zero rows,
+// independent of family).
+//
+// Every rejection happens before the output vector is allocated:
+//   - the same scenario/plan/evaluation-order checks run_replicate_from_banks
+//     performs;
+//   - `banks.family != scenario.qer_family`: std::invalid_argument (a
+//     tampered or mismatched scenario/bank family pair);
+//   - `banks` was not sized for `plan` (susceptible bank length != N_active,
+//     or, for a direct family, the direct-QER bank length != K_total):
+//     std::invalid_argument.
+// Throws std::runtime_error on any cursor overrun, or if the traversal ends
+// with any cursor short of its bank length.
+ReplicateResult run_replicate_from_family_banks(const sampling_plan::SamplingPlan& plan,
+                                                 const sampling_plan::FamilyParameterBanks& banks,
+                                                 const EffectiveScenario& scenario,
+                                                 const ReplicateOptions& options = ReplicateOptions{});
 
 // Runs one replicate over an explicitly supplied plan (an injected `ninf`
 // vector), building this replicate's parameter banks from it and delegating

@@ -12,6 +12,7 @@
 #include <system_error>
 #include <vector>
 
+#include "qer_direct.h"
 #include "sampling_plan.h"
 #include "statistics.h"
 
@@ -220,6 +221,29 @@ void validate_domains(const CliOptions& options) {
         options.community_infection_rate && !(*options.community_infection_rate > 0.0)) {
         reject("flag --infector-policy risk-averse requires --community-rate > 0");
     }
+    // QER family/profile selector (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md
+    // Phase 5). Validate the enum domain itself first, and as early as
+    // possible: parse_cli can only ever produce one of the three named
+    // enumerators, so this only ever catches options built or edited out of
+    // band, but it must run before the category lookup, scenario
+    // resolution, allocation or output creation in resolve_run, not merely
+    // be caught eventually by the descriptor-build switch further down.
+    switch (options.qer_family) {
+        case qer_direct::QerFamily::Jones:
+        case qer_direct::QerFamily::JonesFitted:
+        case qer_direct::QerFamily::Mikszewski:
+            break;
+        default:
+            reject("QER family selector is out of range; expected Jones, JonesFitted, or Mikszewski");
+    }
+    // Mikszewski always carries a resolved profile once parsing accepts it;
+    // Jones and JonesFitted never do. A mismatch here means the options were
+    // edited out of band rather than produced by parse_cli.
+    const bool has_mikszewski_profile = options.qer_mikszewski_profile.has_value();
+    if ((options.qer_family == qer_direct::QerFamily::Mikszewski) != has_mikszewski_profile) {
+        reject("QER family/profile provenance is inconsistent: Mikszewski requires exactly one "
+               "resolved profile, and no other family may carry one");
+    }
 }
 
 // Require non-explicit scalar values to retain their parser defaults. This
@@ -255,6 +279,11 @@ void validate_scalar_provenance(const CliOptions& options) {
         options.infector_policy != simulation::InfectorPolicy::community) {
         reject("infector policy differs from its unoverridden default");
     }
+    if (!options.qer_family_explicit &&
+        (options.qer_family != qer_direct::QerFamily::Jones ||
+         options.qer_mikszewski_profile.has_value())) {
+        reject("QER distribution selector differs from its unoverridden default");
+    }
 }
 
 }  // namespace
@@ -266,6 +295,7 @@ const std::vector<std::string>& accepted_flags() {
         "--duration-hours", "--base-seed",         "--community-rate",
         "--occupants",      "--volume-m3",         "--mask-efficiency",
         "--mode",           "--input-ecai",        "--infector-policy",
+        "--qer-distribution",
         "--output-directory", "--summary-file",    "--replicates-file",
         "--write-replicates", "--help"};
     return flags;
@@ -342,6 +372,19 @@ std::string help_text() {
         "                              infector and requires a strictly positive\n"
         "                              effective community rate (I0 >= 1 is already\n"
         "                              required in both policies).\n"
+        "\n"
+        "QER distribution selector (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md; any explicit\n"
+        "value here, including an explicit \"jones\", marks the run a custom scenario, because\n"
+        "it changes the QER calculation mechanism):\n"
+        "  --qer-distribution NAME     \"jones\" (default, full mechanistic Jones et al.\n"
+        "                              calculation), \"jones-fitted\", or a full canonical\n"
+        "                              Mikszewski profile name, e.g.\n"
+        "                              \"mikszewski-sars-cov-2-standing-speaking\". Bare\n"
+        "                              \"mikszewski\" is rejected: no default profile is\n"
+        "                              resolved for it. Case sensitive, no aliases. Selecting\n"
+        "                              a direct family selects the family-aware sampling and\n"
+        "                              simulation path and emits a versioned provenance\n"
+        "                              schema that is not a full-Jones comparator output.\n"
         "\n"
         "Output controls (Stage 12 parses and records these only; no directory or file\n"
         "is created, opened, written or checked until Stage 13):\n"
@@ -458,6 +501,29 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
                        value + "\"");
             }
             options.infector_policy_explicit = true;
+        } else if (arg == "--qer-distribution") {
+            if (value == "jones") {
+                options.qer_family = qer_direct::QerFamily::Jones;
+                options.qer_mikszewski_profile.reset();
+            } else if (value == "jones-fitted") {
+                options.qer_family = qer_direct::QerFamily::JonesFitted;
+                options.qer_mikszewski_profile.reset();
+            } else if (value == "mikszewski") {
+                reject(
+                    "flag --qer-distribution requires an explicit Mikszewski profile, e.g. "
+                    "\"mikszewski-sars-cov-2-standing-speaking\"; bare \"mikszewski\" is not "
+                    "accepted");
+            } else {
+                try {
+                    options.qer_mikszewski_profile = qer_direct::parse_mikszewski_profile(value);
+                } catch (const std::invalid_argument&) {
+                    reject("flag --qer-distribution expects \"jones\", \"jones-fitted\", or a full "
+                           "Mikszewski profile name, but got \"" +
+                           value + "\"");
+                }
+                options.qer_family = qer_direct::QerFamily::Mikszewski;
+            }
+            options.qer_family_explicit = true;
         } else if (arg == "--output-directory") {
             options.output_directory = require_identifier(value, arg);
         } else if (arg == "--summary-file") {
@@ -478,7 +544,8 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
                                options.community_infection_rate.has_value() ||
                                options.occupants.has_value() || options.volume_m3.has_value() ||
                                options.mask_efficiency.has_value() ||
-                               options.input_ecai_l_s_person.has_value();
+                               options.input_ecai_l_s_person.has_value() ||
+                               options.qer_family_explicit;
     options.target_is_hourly = (options.duration_hours == 1.0);
     validate_domains(options);
     return options;
@@ -501,7 +568,8 @@ ResolvedRun resolve_run(const CliOptions& options) {
         options.target_probability_explicit || options.duration_explicit ||
         options.percentile_explicit || options.community_infection_rate.has_value() ||
         options.occupants.has_value() || options.volume_m3.has_value() ||
-        options.mask_efficiency.has_value() || options.input_ecai_l_s_person.has_value();
+        options.mask_efficiency.has_value() || options.input_ecai_l_s_person.has_value() ||
+        options.qer_family_explicit;
     if (expected_custom != options.custom_scenario) {
         reject("custom-scenario provenance disagrees with the supplied scientific overrides");
     }
@@ -533,6 +601,43 @@ ResolvedRun resolve_run(const CliOptions& options) {
     run.overrides.infector_policy = options.infector_policy;
     run.overrides.infector_policy_explicit = options.infector_policy_explicit;
 
+    // Build the immutable QER selector descriptor once, entirely through the
+    // work package 1 qer_direct API, and copy it into EffectiveOverrides
+    // before resolve_scenario runs below: resolve_scenario copies these
+    // fields through unchanged into EffectiveScenario (Phase 5), so the
+    // descriptor must exist first. Jones-fitted params are looked up by the
+    // resolved category's canonical name, not by CLI category text, so any
+    // legacy alias still resolves to the correct fitted record.
+    run.qer_selection.family = options.qer_family;
+    run.qer_selection.mikszewski_profile = options.qer_mikszewski_profile;
+    switch (options.qer_family) {
+        case qer_direct::QerFamily::Jones:
+            run.qer_selection.canonical_name = qer_direct::to_string(qer_direct::QerFamily::Jones);
+            break;
+        case qer_direct::QerFamily::JonesFitted:
+            run.qer_selection.canonical_name =
+                qer_direct::to_string(qer_direct::QerFamily::JonesFitted);
+            run.qer_selection.direct_params = qer_direct::jones_fitted_params_for_canonical_category(
+                run.category->canonical_name);
+            break;
+        case qer_direct::QerFamily::Mikszewski:
+            if (!options.qer_mikszewski_profile) {
+                reject("QER family Mikszewski resolved without a profile");
+            }
+            run.qer_selection.canonical_name =
+                qer_direct::canonical_mikszewski_profile_name(*options.qer_mikszewski_profile);
+            run.qer_selection.direct_params =
+                qer_direct::mikszewski_params_for_profile(*options.qer_mikszewski_profile);
+            break;
+        default:
+            reject("QER family selector is out of range; expected Jones, JonesFitted, or Mikszewski");
+    }
+
+    run.overrides.qer_family = run.qer_selection.family;
+    run.overrides.qer_family_explicit = options.qer_family_explicit;
+    run.overrides.qer_mikszewski_profile = run.qer_selection.mikszewski_profile;
+    run.overrides.qer_direct_params = run.qer_selection.direct_params;
+
     run.config.category_name = run.category->canonical_name;
     run.config.i0 = options.occupants ? *options.occupants
                                       : static_cast<std::int64_t>(run.category->i0);
@@ -553,6 +658,7 @@ ResolvedRun resolve_run(const CliOptions& options) {
     // category/override resolution agree exactly, and applies every scenario
     // domain check, before anything is allocated or sampled.
     run.scenario = simulation::resolve_scenario(*run.category, run.config, run.overrides);
+
     return run;
 }
 

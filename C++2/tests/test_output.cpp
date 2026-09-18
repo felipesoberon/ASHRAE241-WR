@@ -826,6 +826,79 @@ int main() {
         }
     }
 
+    // --- Package 4a: direct-QER provenance/schema variants -------------------
+    {
+        const cli::CliOptions direct_options = cli::parse_cli(
+            {"--category", "Exam room", "--simulations", "4", "--replicates", "2",
+             "--qer-distribution", "jones-fitted"});
+        const cli::ResolvedRun direct_run = cli::resolve_run(direct_options);
+        const ReplicateBatch direct_batch = simulation::run_replicates(
+            direct_run.base_seed, direct_run.config, *direct_run.category, direct_run.overrides);
+        const OutputDocument direct_document =
+            output::build_document(direct_run, direct_batch, direct_options);
+        const auto direct_names = named_row(direct_document);
+        check(direct_document.summary_columns.size() == 98 &&
+                  direct_document.replicate_columns.size() == 28,
+              "Jones-fitted community ECAi uses the versioned 98/28-column direct schema");
+        check(direct_names.at("schema_version") == output::kDirectOutputSchemaVersion &&
+                  direct_names.at("qer_family") == "jones-fitted" &&
+                  direct_names.at("qer_profile").empty() &&
+                  direct_names.at("qer_units") == "quanta/h per infector" &&
+                  direct_names.at("qer_transform") ==
+                      "10**(mu_log10+sigma_log10*normal_ppf(u))" &&
+                  direct_names.at("qer_parameter_table_version") ==
+                      qer_direct::kJonesFittedTableVersion &&
+                  direct_names.at("qer_direct_bank") ==
+                      "direct-qer-bank-v1;stream=direct_qer;layout=K_total" &&
+                  direct_names.at("qer_seed_policy") == seed_manager::kSeedPolicyVersion,
+              "Jones-fitted metadata identifies family, transform, units, table, bank and seed policy");
+        check(direct_names.at("comparator_eligible") == "false" &&
+                  direct_names.at("comparator_status") == "NOT_APPLICABLE_QER_FAMILY",
+              "direct-family ECAi suppresses the full-Jones comparator");
+        for (const auto& row : direct_document.replicate_rows) {
+            check(row.back() == seed_manager::kSeedPolicyVersion,
+                  "direct replicate rows carry the same run-level QER provenance");
+        }
+    }
+    {
+        const cli::CliOptions direct_options = cli::parse_cli(
+            {"--category", "Exam room", "--simulations", "4", "--replicates", "2", "--mode",
+             "probability", "--qer-distribution", "mikszewski-sars-cov-2-standing-speaking",
+             "--infector-policy", "risk-averse"});
+        const cli::ResolvedRun direct_run = cli::resolve_run(direct_options);
+        const ReplicateBatch direct_batch = simulation::run_replicates(
+            direct_run.base_seed, direct_run.config, *direct_run.category, direct_run.overrides);
+        const OutputDocument direct_document =
+            output::build_document(direct_run, direct_batch, direct_options);
+        const auto direct_names = named_row(direct_document);
+        check(direct_document.summary_columns.size() == 112 &&
+                  direct_document.replicate_columns.size() == 31,
+              "Mikszewski risk-averse probability uses the versioned direct schema");
+        check(direct_names.at("schema_version") == output::kDirectRiskAverseProbabilitySchemaVersion &&
+                  direct_names.at("qer_family") == "mikszewski" &&
+                  direct_names.at("qer_profile") ==
+                      "mikszewski-sars-cov-2-standing-speaking" &&
+                  direct_names.at("qer_parameter_table_version") ==
+                      qer_direct::kMikszewskiTableVersion &&
+                  direct_names.at("comparator_eligible") == "false" &&
+                  direct_names.at("comparator_status") == "NOT_APPLICABLE_QER_FAMILY",
+              "Mikszewski risk-averse metadata carries canonical profile and suppresses comparator");
+    }
+    {
+        const cli::CliOptions direct_options = cli::parse_cli(
+            {"--category", "Exam room", "--simulations", "2", "--replicates", "1",
+             "--qer-distribution", "jones-fitted"});
+        const cli::ResolvedRun direct_run = cli::resolve_run(direct_options);
+        const ReplicateBatch direct_batch = simulation::run_replicates(
+            direct_run.base_seed, direct_run.config, *direct_run.category, direct_run.overrides);
+        cli::CliOptions mismatched = direct_options;
+        mismatched.qer_family = qer_direct::QerFamily::Mikszewski;
+        mismatched.qer_mikszewski_profile =
+            qer_direct::parse_mikszewski_profile("mikszewski-sars-cov-2-resting");
+        check(rejects([&] { (void)output::build_document(direct_run, direct_batch, mismatched); }),
+              "scenario/options QER family-profile mismatch is rejected before output composition");
+    }
+
     fs::remove_all(root, ec);
     if (failures) {
         std::cerr << failures << " of " << checks << " checks failed.\n";

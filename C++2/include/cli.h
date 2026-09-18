@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "category_data.h"
+#include "qer_direct.h"
 #include "simulation.h"
 
 namespace ecai_cpp2 {
@@ -102,6 +103,20 @@ struct CliOptions {
     bool mode_explicit = false;
     std::optional<double> input_ecai_l_s_person;
 
+    // QER family/profile selector (docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md
+    // Phase 5, work package 2). One strict `--qer-distribution` selector
+    // covers all three families: "jones" (default, mechanistic Jones et al.),
+    // "jones-fitted", or a full canonical Mikszewski profile name (e.g.
+    // "mikszewski-sars-cov-2-standing-speaking"). Bare "mikszewski" is
+    // rejected: it has no default-profile resolution. An explicit selector,
+    // including an explicit "jones", always marks the run a custom scenario,
+    // because it changes the QER calculation mechanism itself. This field is
+    // parsed and resolved to an immutable descriptor before family-aware
+    // sampling, simulation, and output-schema provenance integration.
+    qer_direct::QerFamily qer_family = qer_direct::QerFamily::Jones;
+    bool qer_family_explicit = false;
+    std::optional<qer_direct::MikszewskiProfile> qer_mikszewski_profile;
+
     // Infector policy (docs/RISK_AVERSE_IMPLEMENTATION_PLAN.md Phase 3):
     // "community" (default) or "risk-averse", case sensitive, no aliases.
     // Independent of `mode`; never marks the run a custom scenario by
@@ -128,10 +143,10 @@ struct CliOptions {
 
     // True iff at least one explicit scientific override was supplied:
     // target probability, duration, percentile, community rate, occupants,
-    // volume, mask efficiency, or input ECAi. Explicitly supplying a value
-    // equal to the default still counts. Simulation count, replicate count,
-    // base seed, confidence level, output mode and the output controls never
-    // set this on their own.
+    // volume, mask efficiency, input ECAi, or QER family/profile. Explicitly
+    // supplying a value equal to the default still counts. Simulation count,
+    // replicate count, base seed, confidence level, output mode, infector
+    // policy and the output controls never set this on their own.
     bool custom_scenario = false;
 
     // True iff the effective duration is exactly 1.0 h. The target
@@ -145,6 +160,32 @@ struct CliOptions {
 // than the option values alone, is the subject.
 using ParsedCommand = CliOptions;
 
+// The immutable resolved QER family/profile descriptor for one run, built
+// once in resolve_run from the parsed selector and (for Jones-fitted) the
+// resolved category, entirely through the work package 1 qer_direct API.
+// Every field is set once at construction and consumed by the family-aware
+// sampling, simulation, and output provenance paths.
+//
+// `direct_params` is populated for JonesFitted and Mikszewski only; for the
+// default Jones family it is left at its zero-initialized value and must not
+// be read, since full-Jones mechanistic sampling does not use a direct
+// log10-normal distribution at all.
+//
+// The direct parameters are used by family-aware sampling and simulation;
+// output builders emit their immutable table/profile provenance once per
+// summary and replicate metadata record.
+struct ResolvedQerSelection {
+    qer_direct::QerFamily family = qer_direct::QerFamily::Jones;
+    std::optional<qer_direct::MikszewskiProfile> mikszewski_profile;
+
+    // Canonical rendering: "jones", "jones-fitted", or the full Mikszewski
+    // profile name (qer_direct::canonical_mikszewski_profile_name).
+    std::string canonical_name;
+
+    // Meaningful only when family != Jones; see the struct comment above.
+    qer_direct::DirectQerParams direct_params{};
+};
+
 // One resolved run: the selected category record, retained rather than
 // copied over, alongside the effective configuration/overrides/scenario
 // derived from it and the parsed options.
@@ -156,6 +197,7 @@ struct ResolvedRun {
     simulation::EffectiveConfiguration config;
     simulation::EffectiveOverrides overrides;
     simulation::EffectiveScenario scenario;
+    ResolvedQerSelection qer_selection;
 
     std::uint64_t base_seed = kDefaultBaseSeed;
     bool custom_scenario = false;
@@ -172,9 +214,11 @@ struct ResolvedRun {
 // required; `--help` combined with any other argument; an empty category or
 // path string; any numeric value that is not a strict, locale independent,
 // full-string parse in range for its field; an --infector-policy value other
-// than "community" or "risk-averse"; and --infector-policy risk-averse
+// than "community" or "risk-averse"; --infector-policy risk-averse
 // combined with an explicit --community-rate <= 0 (the definitive check,
-// covering the category-default rate too, runs later in resolve_run).
+// covering the category-default rate too, runs later in resolve_run); and a
+// --qer-distribution value other than "jones", "jones-fitted", or a full
+// canonical Mikszewski profile name (bare "mikszewski" is rejected).
 CliOptions parse_cli(const std::vector<std::string>& args);
 
 // Performs the strict category lookup (docs/MODEL_SPECIFICATION.md D7) and

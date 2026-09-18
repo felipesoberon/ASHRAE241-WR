@@ -81,7 +81,7 @@ int main() {
     // StreamId: unique, exhaustive, name-mapped.
     // ---------------------------------------------------------------
     {
-        check(kAllStreamIds.size() == 12, "kAllStreamIds contains exactly 12 entries");
+        check(kAllStreamIds.size() == 13, "kAllStreamIds contains exactly 13 entries");
 
         std::set<std::uint64_t> raw_values;
         for (StreamId id : kAllStreamIds) {
@@ -89,17 +89,17 @@ int main() {
         }
         check(raw_values.size() == kAllStreamIds.size(), "every StreamId raw value is unique");
 
-        const std::uint64_t expected_values[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
-        for (int i = 0; i < 12; ++i) {
+        const std::uint64_t expected_values[13] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+        for (int i = 0; i < 13; ++i) {
             check(static_cast<std::uint64_t>(kAllStreamIds[static_cast<std::size_t>(i)]) ==
                       expected_values[i],
                   "kAllStreamIds[" + std::to_string(i) + "] has its frozen fixed value");
         }
 
-        const std::string expected_names[12] = {
-            "infector_count", "susceptible_pbr", "gamma", "lambda",
-            "infector_pbr",   "c_drop",          "d_bar", "E",
-            "GVL",            "VF",              "RTD",   "DK",
+        const std::string expected_names[13] = {
+            "infector_count", "susceptible_pbr", "gamma",  "lambda", "infector_pbr",
+            "c_drop",         "d_bar",           "E",      "GVL",    "VF",
+            "RTD",            "DK",              "direct_qer",
         };
         std::set<std::string> names;
         for (std::size_t i = 0; i < kAllStreamIds.size(); ++i) {
@@ -110,6 +110,14 @@ int main() {
             names.insert(name);
         }
         check(names.size() == kAllStreamIds.size(), "every StreamId name is unique");
+
+        // The 12 full-Jones stream identifiers are frozen and unrenumbered
+        // (work package 2 adds only StreamId::direct_qer == 12, appended
+        // after the existing full-Jones set).
+        check(static_cast<std::uint64_t>(StreamId::DK) == 11,
+              "the highest full-Jones StreamId (DK) is still 11, unrenumbered");
+        check(static_cast<std::uint64_t>(StreamId::direct_qer) == 12,
+              "StreamId::direct_qer is the new isolated direct-QER stream identifier, 12");
     }
 
     // ---------------------------------------------------------------
@@ -119,11 +127,11 @@ int main() {
     {
         bool threw = false;
         try {
-            stream_id_name(static_cast<StreamId>(12));
+            stream_id_name(static_cast<StreamId>(13));
         } catch (const std::invalid_argument&) {
             threw = true;
         }
-        check(threw, "stream_id_name rejects an unrecognized StreamId (raw value 12) "
+        check(threw, "stream_id_name rejects an unrecognized StreamId (raw value 13) "
                      "with std::invalid_argument");
 
         threw = false;
@@ -460,7 +468,11 @@ int main() {
         std::set<std::uint64_t> seeds;
         std::size_t total = 0;
         for (std::uint64_t replicate_index = 0; replicate_index < 500; ++replicate_index) {
-            for (StreamId id : kAllStreamIds) {
+            // Scoped to exactly the original 12 full-Jones stream ids
+            // (kAllStreamIds[0..11]), so this sweep's coverage is unchanged
+            // by the work package 2 addition of StreamId::direct_qer below.
+            for (std::size_t i = 0; i < 12; ++i) {
+                const StreamId id = kAllStreamIds[i];
                 const std::uint64_t seed =
                     manager.derive_seed(config, replicate_index, id, list_length_for(id));
                 seeds.insert(seed);
@@ -501,7 +513,10 @@ int main() {
         std::set<std::vector<std::uint64_t>> prefixes;
         std::size_t total = 0;
         for (std::uint64_t replicate_index = 0; replicate_index < 500; ++replicate_index) {
-            for (StreamId id : kAllStreamIds) {
+            // Scoped to the original 12 full-Jones stream ids; see the
+            // matching comment on the seed-collision sweep above.
+            for (std::size_t stream_index = 0; stream_index < 12; ++stream_index) {
+                const StreamId id = kAllStreamIds[stream_index];
                 const std::uint64_t seed =
                     manager.derive_seed(config, replicate_index, id, list_length_for(id));
                 std::mt19937_64 engine(seed);
@@ -519,6 +534,75 @@ int main() {
         check(prefixes.size() == total,
               "no two streams in the supported 500-replicate x 12-stream set share an "
               "identical first-8-output std::mt19937_64 sequence");
+    }
+
+    // ---------------------------------------------------------------
+    // Work package 2: StreamId::direct_qer is a new, isolated stream
+    // identifier (12), added after the frozen full-Jones set (0-11)
+    // without renumbering or reusing any of them. It derives through the
+    // same fold_stream_seed/SeedManager machinery, with no special-cased
+    // domain tag or design-version change, and does not collide with any
+    // full-Jones stream's derived seed for a shared (config, replicate)
+    // tuple across the supported 500-replicate domain.
+    // ---------------------------------------------------------------
+    {
+        SeedManager manager(485);
+        const EffectiveConfig config = make_config1();
+
+        // derive_seed centralizes derivation through fold_stream_seed
+        // (already independently known-answer tested above); direct_qer's
+        // output is cross-checked against that same oracle rather than a
+        // freshly fabricated literal.
+        const std::uint64_t direct_seed =
+            manager.derive_seed(config, 3, StreamId::direct_qer, 12345);
+        const std::uint64_t expected = fold_stream_seed(
+            485, kDesignVersion, config_fingerprint(config), 3,
+            static_cast<std::uint64_t>(StreamId::direct_qer), 12345);
+        check(direct_seed == expected,
+              "SeedManager::derive_seed(direct_qer) matches fold_stream_seed's independently "
+              "known-answer-tested fold for the same tuple");
+
+        check(direct_seed ==
+                  manager.derive_seed(config, 3, StreamId::direct_qer, 12345),
+              "SeedManager::derive_seed(direct_qer) is deterministic across repeated calls");
+
+        const std::uint64_t different_replicate =
+            manager.derive_seed(config, 4, StreamId::direct_qer, 12345);
+        check(different_replicate != direct_seed,
+              "SeedManager::derive_seed(direct_qer) changes with replicate_index, like every "
+              "other stream");
+
+        auto list_length_for = [](StreamId id) -> std::uint64_t {
+            switch (id) {
+                case StreamId::infector_count:
+                    return 10000;
+                case StreamId::susceptible_pbr:
+                case StreamId::gamma:
+                case StreamId::lambda:
+                    return 9800;
+                default:
+                    return 40000;
+            }
+        };
+
+        std::set<std::uint64_t> seeds;
+        std::size_t total = 0;
+        for (std::uint64_t replicate_index = 0; replicate_index < 500; ++replicate_index) {
+            for (StreamId id : kAllStreamIds) {
+                const std::uint64_t seed =
+                    manager.derive_seed(config, replicate_index, id, list_length_for(id));
+                seeds.insert(seed);
+                ++total;
+            }
+        }
+        check(total == 500 * 13, "generated exactly 500 * 13 = 6500 seeds across all 13 "
+                                  "stream ids (12 full-Jones plus the new direct_qer stream)");
+        check(seeds.size() == total,
+              "no seed collisions across 500 replicates x all 13 stream ids, including the "
+              "new isolated direct_qer stream, using realistic per-stream list lengths");
+
+        check(stream_id_name(StreamId::direct_qer) == "direct_qer",
+              "stream_id_name(StreamId::direct_qer) == \"direct_qer\"");
     }
 
     if (g_failures > 0) {

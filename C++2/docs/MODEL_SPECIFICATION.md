@@ -299,6 +299,58 @@ reuses the same sampling architecture, distributions, and person-specific-PBR de
 - `--occupants` overrides rescale total ECA (the per-person input ECAi times the effective `I0`)
   and, like every other scientific override, suppress the comparator.
 
+### 3.2 Direct-QER families (C++2-specific extension, not a Jones et al. equation)
+
+`ecai_cpp2` supports three QER (quanta emission rate) calculation families, selected with
+`--qer-distribution` (`docs/CLI_REFERENCE.md`). This is a C++2 engineering extension layered on
+top of the Jones et al. framework in §3 above; Jones et al. defines only the mechanistic
+calculation (family 1 below) and does not define, endorse, or discuss families 2 or 3.
+
+1. **Full Jones (default, family `jones`).** QER_i is computed mechanistically via Eq. 3
+   (`QER_i = RTD · VER_i / DK`) from eight independently sampled infector-side inputs (`PBR_i`,
+   `C_drop`, `d̄`, `E`, `GVL_i`, `VF`, `RTD`, `DK`; §5–§7, §11.1). This is the calculation
+   documented everywhere else in this specification and is unchanged by the existence of the
+   other two families.
+2. **Jones-fitted (family `jones-fitted`).** One direct log10-normal distribution per canonical
+   occupancy category, fitted to full-Jones QER output, replaces the eight-input mechanistic
+   calculation for the infector side only:
+
+   ```text
+   QER_i = 10 ** (mu_log10 + sigma_log10 * normal_ppf(u))
+   ```
+
+   `QER_i` is in quanta/h per infector, one draw per realized infector. The table has exactly 25
+   records, one per canonical publication category (§6 D7 naming), with `(mu_log10, sigma_log10)`
+   copied exactly from the legacy `C++/src/qer_fitted.cpp` `qer_fitted_params` map
+   (table version `qer_direct::kJonesFittedTableVersion`). Thirteen of the 25 legacy short names
+   differ from their canonical category name (`Food`, `Transportation`, `Lecture`, `Sorting`,
+   `Exam`, `Group`, `Patient`, `Resident`, `Waiting`, `Place`, `Spectator`, `Common`, `Dwelling` →
+   e.g. `Food` → `Food and beverage facilities`, `Transportation` → `Transportation waiting`,
+   `Sorting` → `Sorting, packing, light assembly`); the remaining 12 legacy short names are
+   identical to their canonical category name. The complete, explicit mapping is
+   `qer_direct::jones_fitted_legacy_aliases()`
+   (`include/qer_direct.h`), independent of the CLI category-alias table in §6 D7.
+3. **Mikszewski (family `mikszewski-<organism>-<activity>`).** 30 published profiles — 10
+   organisms (SARS-CoV-1, MERS, TB on treatment, influenza, coxsackievirus, rhinovirus,
+   SARS-CoV-2, TB untreated, adenovirus, measles) crossed with 3 activities (resting,
+   standing-speaking, light-speaking-loudly) — each store a literal published median quanta/h and
+   an organism-specific `sigma_log10` (Mikszewski et al. 2022, Tables 1–2, via the legacy
+   `C++/src/qer_fitted.cpp` `mikszewski_params` map; table version
+   `qer_direct::kMikszewskiTableVersion`). `mu_log10 = log10(median)` is computed at
+   initialization without rounding. Bare `mikszewski` is rejected; a full canonical profile name is
+   required (`docs/CLI_REFERENCE.md`).
+
+Both direct families replace only the infector-side QER draw. Every susceptible-side input
+(`PBR_s`, `γ`, `λ`), Eq. 1/2/6/7 (ECAi mode, §3 above), and the forward probability evaluation
+(§3.1 above) are unchanged and apply identically to all three families and to both output modes.
+A direct-family QER value is consumed exactly once per realized infector, in place of the
+eight-input Eq. 3/Eq. 4 mechanism, not in addition to it (`docs/QER_DISTRIBUTION_IMPLEMENTATION_
+PLAN.md` Phase 2–3). Bank layout and resource accounting for the three families are specified in
+[`SAMPLING_DESIGN.md`](SAMPLING_DESIGN.md); output schema and comparator handling are in
+[`CLI_REFERENCE.md`](CLI_REFERENCE.md) and `VALIDATION.md`. Selecting a direct family is not a
+claim that its output is scientifically equivalent to full Jones; see
+`QER_FULL_JONES_VS_JONES_FITTED_VALIDATION.md` for the bounded statistical comparison procedure.
+
 ---
 
 ## 4. Design parameters (verbatim summary, §2, pp. 6–8)
@@ -906,7 +958,7 @@ documented numerical evidence and independent approval.
   output schema.
 - **Adjudicated items:** D2 uses the publication value `PBR_GM = 0.51 m³/h` for Dwelling unit;
   D7 uses full publication category names as canonical identifiers with strict normalized input
-  matching and unconditionally accepts exactly the ten explicit legacy aliases listed in D7.
+  matching and unconditionally accepts exactly the thirteen explicit legacy aliases listed in D7.
   D1 and D5 remain terminology-only publication inconsistencies with no numeric effect.
 
 ---

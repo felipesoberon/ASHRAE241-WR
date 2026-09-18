@@ -32,6 +32,8 @@ std::string stream_id_name(StreamId id) {
             return "E";
         case StreamId::GVL:
             return "GVL";
+        case StreamId::direct_qer:
+            return "direct_qer";
         case StreamId::VF:
             return "VF";
         case StreamId::RTD:

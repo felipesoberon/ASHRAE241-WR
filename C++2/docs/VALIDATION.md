@@ -162,3 +162,60 @@ checks.
 ## Risk-averse verification
 
 Direct smoke runs verified both risk-averse ECAi and probability output paths: each exited 0, produced its versioned schema (`stage13-ra-v1` or `stage13-prob-ra-v1`), reported `NOT_APPLICABLE_RISK_AVERSE`, and produced no zero-infector rows. An invalid risk-averse `p=0` invocation exited nonzero and produced no files. The simulation-focused executable passed 292 checks and the full CTest suite passed 12/12. These checks verify implementation wiring and invariants, not independent scientific validation.
+
+## QER distribution families
+
+`--qer-distribution` (`docs/CLI_REFERENCE.md`) selects one of three QER calculation families,
+resolved to an immutable descriptor once before sampling:
+
+- `jones` (default) — the existing full mechanistic Jones et al. calculation, unchanged: three
+  susceptible banks plus the eight infector-side QER banks, the current bank order, seeds,
+  cursors, and equations.
+- `jones-fitted` — a direct log10-normal fit to full-Jones output (`QER_i = 10 **
+  (mu_log10 + sigma_log10 * normal_ppf(u))`), one draw per realized infector from a single
+  direct-QER bank, using the 25-record parameter table carried over from the legacy `C++`
+  implementation.
+- a full canonical Mikszewski profile name (e.g. `mikszewski-sars-cov-2-standing-speaking`) —
+  the same direct log10-normal mechanism using literal median-quanta/h and organism-specific
+  `sigma_log10` values from the Mikszewski parameter table. Bare `mikszewski` is rejected.
+
+Full Jones and both direct families apply the same susceptible-side inputs and the same ECAi/
+probability equations; only the infector-side emission realization differs. Family selection is
+orthogonal to output mode: both ECAi and probability modes dispatch through the same
+family-resolved QER path (`docs/QER_DISTRIBUTION_IMPLEMENTATION_PLAN.md` Phase 5).
+
+### Matched controls and stream sharing
+
+QER family and Mikszewski profile are not fields of `EffectiveConfig` and are not folded into the
+seed fingerprint (`docs/SEED_POLICY.md`). For an identical `(category, overrides, N, R,
+percentile, confidence, target, duration, base seed)`, all three families derive an identical
+`infector_count` stream and identical susceptible banks, and the shared `direct_qer` stream
+(`StreamId` 12) is seeded identically across `jones-fitted` and every Mikszewski profile. This
+means a bounded full-Jones-versus-Jones-fitted run at matched category, prevalence, mask,
+percentile, N, and base seed compares two different emission realizations under otherwise-matched
+sampling, not a bit-identical replay. See
+`QER_FULL_JONES_VS_JONES_FITTED_VALIDATION.md` for the bounded comparison procedure. This is a
+statistical comparison, not a claim of numerical agreement, and no such agreement is asserted
+here.
+
+An explicit `--qer-distribution`, including an explicit `jones`, marks the run `custom_scenario`.
+
+### Schemas, provenance, and comparator suppression
+
+Direct-family runs do not introduce a new summary/replicate schema version; they populate the
+existing versioned schema's QER-family provenance columns (family, canonical Mikszewski profile
+where applicable, parameter-table/version identifier, transform and units, direct-bank layout,
+and direct values generated/consumed/evaluated) alongside the fields already documented above.
+The existing full-Jones publication comparator (Table 4 adjusted ECAi) is not valid for
+`jones-fitted` or Mikszewski output: alternative-family runs report the comparator as not
+applicable, the same suppression already used for custom scenarios and risk-averse runs, rather
+than being scored against a Jones-derived reference value.
+
+### Interaction with risk-averse infector policy
+
+`--infector-policy risk-averse` and `--qer-distribution` are independent selectors that compose:
+risk-averse conditioning on infector count (`N_active == N`, no zero-infector rows) is unchanged
+by QER family, and each realized infector still consumes exactly one direct-QER draw (direct
+families) or the eight full-Jones draws (`jones`) regardless of infector policy. Risk-averse
+direct-family runs report `NOT_APPLICABLE_RISK_AVERSE` for the population comparator, consistent
+with community-policy direct-family runs reporting the QER-family comparator as not applicable.
