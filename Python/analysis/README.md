@@ -10,12 +10,12 @@ There are two data formats:
   Contains one `float32` array of raw infection probabilities (0-1)
   per occupancy category. Read by `percentiles.py` and `boxplot.py`.
 
-- **C++ `.bin`** -- written by `C++/build/probability_ecai --save-all`.
+- **C++ `.bin`** -- written by `C++_legacy/build/probability_ecai --save-all`.
   Custom binary format with the same content. Read by `bin_reader.py`
   and all C++-format scripts below.
 
 - **C++ inputs `.bin`** -- written by
-  `C++/build/probability_ecai --save-inputs`. Contains 21 fields per
+  `C++_legacy/build/probability_ecai --save-inputs`. Contains 21 fields per
   simulation (sampled parameters + intermediate values for driver
   analysis). Read by `inputs_reader.py`.
 
@@ -286,13 +286,13 @@ From the `Python/` directory:
 
     python probabilityECAi.py 1000000 --save-all --outfile run1M.npz
 
-From the repository root via WSL (C++):
+From the repository root via WSL (C++_legacy):
 
-    ./C++/build/probability_ecai 1000000 --save-all \
+    ./C++_legacy/build/probability_ecai 1000000 --save-all \
         --outfile probECAi_1M.bin
 
     # With input parameters for driver analysis:
-    ./C++/build/probability_ecai 1000000 --save-all --save-inputs \
+    ./C++_legacy/build/probability_ecai 1000000 --save-all --save-inputs \
         --outfile probECAi_1M.bin \
         --inputs-file probECAi_1M_inputs.bin
 

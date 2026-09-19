@@ -1,0 +1,237 @@
+C++_legacy -- Original C++ Port of ASHRAE 241 Risk Model
+==========================================================
+
+High-performance C++17 port of the Python ASHRAE 241 Wells-Riley Monte
+Carlo simulation. Uses the same model equations and parameters as the
+Python implementation, with a ~20x speedup.
+
+This is the original C++ implementation, superseded by the aggregate-demand
+implementation now at `C++/` (formerly developed as `C++2`; see
+`C++/README.md`). It is retained here, under `C++_legacy/`, for reference
+and comparison and is not being extended with new features.
+
+Build
+-----
+
+Requirements: C++17 compiler (g++ 13+) and CMake 3.16+.
+
+From WSL or Linux, in the C++_legacy/ directory:
+
+    cmake -B build
+    cmake --build build
+
+Run tests:
+
+    cd build && ctest -V
+
+The LHS block size is set to the requested simulation count `N` for each
+simulation run. Each distribution keeps a separate buffer, and an exhausted
+buffer is refilled with another block of the same size. All four simulation
+entry points reject `N <= 0` with a nonzero exit status; positive values are
+accepted.
+
+Usage
+-----
+
+All executables are in C++_legacy/build/. They mirror their Python counterparts'
+arguments and output format, with a few added flags (below) that the Python
+scripts do not expose.
+
+ECAi simulation (compute required ECAi at 0.1% target):
+
+    ./build/ecai [N] [--require-infectors]
+                     [--community-rate-general RATE]
+                     [--community-rate-healthcare RATE]
+
+Infection probability at ASHRAE 241 ECAi values:
+
+    ./build/probability_ecai [N] [--save-all] [--outfile FILE]
+                             [--save-inputs] [--inputs-file FILE]
+                             [--no-require-infectors]
+                             [--community-rate-general RATE]
+                             [--community-rate-healthcare RATE]
+                             [--qer-distribution PROFILE]
+                             [--use-fitted-qer]
+
+The `--qer-distribution` option is accepted by all simulation executables that
+calculate QER_i: `ecai`, `probability_ecai`, `probability_scan`, and
+`single_probability`. Accepted values are:
+
+- `jones` (default): the full eight-parameter Jones et al. calculation.
+- `jones-fitted`: category-specific fitted log10-normal distributions derived
+  from the Jones model.
+- `mikszewski-<organism>-<activity>`: all 30 organism/activity profiles from
+  Mikszewski et al. (2022), Tables 1 and 2. The organisms are SARS-CoV-1, MERS,
+  TB on treatment, influenza, coxsackievirus, rhinovirus, SARS-CoV-2, TB
+  untreated, adenovirus, and measles. Activities are resting, standing-speaking,
+  and light-speaking-loudly.
+
+For example: `mikszewski-sars-cov-2-standing-speaking`,
+`mikszewski-measles-light-speaking-loudly`, or
+`mikszewski-tb-untreated-resting`.
+
+The legacy `--use-fitted-qer` flag remains an alias for `jones-fitted`.
+The previous generic `mikszewski` selector remains accepted as an alias for
+`mikszewski-sars-cov-2-standing-speaking`.
+All downstream dose, infection-probability, and ECAi calculations are shared
+between the options.
+
+The --save-inputs flag writes per-simulation input parameters (21 fields
+per simulation: sampled PBR, lambda_bio, gamma, n_infected, phi, QER_sum,
+mask_factor, Q, P, and 12 QER component values) to a separate binary file
+for driver/sensitivity analysis. The RNG call sequence is identical with
+or without --save-inputs, so the computed probabilities are unchanged.
+Use Python/analysis/inputs_reader.py to read this file in Python.
+
+Scan for minimum ECAi:
+
+    ./build/probability_scan [N] [--community-rate-general RATE]
+                                 [--community-rate-healthcare RATE]
+
+ECAi uncertainty study:
+
+    ./build/ecai_uncertainty_study [--method replicate|bootstrap|order-statistic|reproduction]
+                                  [--category NAME] [--simulations N]
+                                  [--repeats R] [--resamples B]
+
+This standalone study supports replicate, bootstrap, order-statistic and
+reproduction methods for any occupancy category. Defaults are 25 replicates of
+10,000 simulations for the `Patient` category. Results are written to
+`ecai_uncertainty_study_results/` relative to the executable's working
+directory; reproduction mode writes to `ecai_reproduction_study_results/`.
+The study is not registered as a CTest test.
+
+Community infection rate options: `--community-rate-general` sets the rate for
+general spaces (default 1%) and `--community-rate-healthcare` for healthcare
+spaces (Exam, Group, Patient, Resident, Waiting; default 3%). When a flag is
+omitted, that group keeps its per-category ASHRAE 241 default, so results are
+unchanged from the original model. An explicit rate of `0` is honored. If
+`require_infectors` is enabled with an effective rate of `0`, the calculation
+reports an invalid configuration rather than retrying indefinitely.
+
+Single category:
+
+    ./build/single_probability --category Classroom --N 10000
+
+Analysis (percentile table + threshold search):
+
+    ./build/percentiles [infile] [--report both|table|threshold] [--target 0.1]
+
+Percentiles outside 0–100 are clamped to the valid range. Empty categories are
+reported as `nan`; a threshold report with no data in any category exits with
+an error instead of reporting a false pass.
+
+Box plot (text-based):
+
+    ./build/boxplot [infile] [--target 0.1]
+
+Graphical interface (C++-backed)
+--------------------------------
+
+mainGUI_C++.py is a Python/Tkinter GUI that mirrors the original mainGUI.py but
+runs the C++ engine instead of the Python model. It is a Windows Python app that
+invokes the ecai / probability_ecai executables through WSL.
+
+    python mainGUI_C++.py      (run from the C++_legacy/ directory)
+
+Requirements:
+  - WSL with a Linux distro (auto-detected).
+  - The C++ engine already built in C++_legacy/build/ (see Build above). The GUI shows
+    a build hint if the executables are missing.
+  - Windows Python with tkinter, matplotlib, and numpy.
+
+Controls mirror mainGUI.py, plus separate community-rate entries for general
+(default 1%) and healthcare (default 3%) spaces, which map to the
+--community-rate-general / --community-rate-healthcare engine flags. The
+QER_i distribution combobox applies to both ECAi and Infection Probability
+runs and offers Jones full, Jones fitted, and Mikszewski distributions.
+
+Benchmark Results (N=10000, all 25 categories)
+----------------------------------------------
+
+| Script             | Python       | C++        | Speedup   |
+|--------------------|--------------|------------|-----------|
+| ecai               | 169s         | 8.4s       | ~20x      |
+| probability_ecai   | 300s+ (timed | 12.8s      | ~23x+     |
+|                    | out at 300s) |            |           |
+
+Validation (N=1,000,000, 96th percentile, vs stored Python reference)
+---------------------------------------------------------------------
+
+Infection probability: 25/25 categories within 1.4% relative
+difference (mean ~0.6%). This is the robust comparison and is
+essentially exact.
+
+ECAi simulation: every category with a meaningful value (> 5 L/s/p)
+agrees within 3.6%. The only larger relative gaps are Patient (33.8%)
+and Warehouse (9.5%) -- near-zero categories (82-91% zero-infector
+sims) where the 96th percentile is ~0-1 L/s/p, so the absolute
+difference is < 0.25 L/s/p and rounds to the same value. This is
+Monte Carlo noise on a near-zero quantity, not a model discrepancy.
+
+Architecture
+------------
+
+  src/random_manager.{h,cpp}  LHS engine + inverse CDFs
+  src/model.{h,cpp}           Occupancy params + QER/infection/ECAi
+                             + QER_with_inputs / infection_probability_with_inputs
+                             (QERDistribution selects the emission model)
+  src/qer_distribution.{h,cpp} Distribution enum and CLI-name parser
+  src/qer_fitted.{h,cpp}     Jones-fitted and Mikszewski log10-normal QER_i
+                             distributions (25-category dictionary + functions)
+  src/ecai.cpp               ECAi simulation script
+  src/probability_ecai.cpp   Probability at ASHRAE ECAi values
+                             (+ --save-inputs, --qer-distribution)
+  src/probability_scan.cpp   ECAi threshold scan
+                             (+ --qer-distribution)
+  src/single_probability.cpp Single-category analysis
+  analysis/percentiles.cpp   Percentile table + threshold search
+  analysis/boxplot.cpp        Text-based box plot
+  mainGUI_C++.py             Tkinter GUI (C++ engine via WSL)
+  tests/                     Unit tests + cross-validation
+                             (test_qer_fitted for fitted distributions)
+
+Reproduction sampling mode
+---------------------------
+
+`ecai_uncertainty_study --method reproduction` uses the repository's
+per-distribution-family LHS path -- the same sampling design as the other
+methods; there is no alternative sampling scheme to select. It reproduces the
+study settings (community rates, mask condition, deterministically seeded
+replicates, requested percentiles) rather than an alternative LHS
+construction, and writes metadata and CSV results under
+`ecai_reproduction_study_results`.
+
+Binary raw data format (--save-all)
+------------------------------------
+
+C++ uses a simple binary format (not .npz):
+
+  uint32_t magic = 0x41534852
+  uint32_t num_categories
+  Per category: uint32_t name_len, char[] name, uint32_t count,
+                float[count] values (raw probability 0-1)
+
+The C++ analysis tools (percentiles, boxplot) read this format.
+Python analysis scripts use Python/analysis/bin_reader.py to read it.
+
+Binary inputs format (--save-inputs)
+-------------------------------------
+
+Per-simulation input parameters for driver/sensitivity analysis:
+
+  uint32_t magic = 0x494E5054 ("INPT")
+  uint32_t num_categories
+  Per category: uint32_t name_len, char[] name, uint32_t count,
+                double[count * 21] values (21 fields per simulation)
+
+Field order (21 doubles per simulation):
+  0: PBR_sample    1: lambda_bio    2: gamma
+  3: n_infected    4: phi           5: QER_sum
+  6: mask_factor   7: Q             8: P
+  9: qer.PBR_qer  10: qer.C_drop   11: qer.d
+ 12: qer.E        13: qer.Vdrop    14: qer.GVL_ml
+ 15: qer.GVL_m3   16: qer.VF       17: qer.RTD
+ 18: qer.DK       19: qer.VER     20: qer.QER_val
+
+Use Python/analysis/inputs_reader.py to read this file in Python.

@@ -17,6 +17,7 @@ __pycache__/
 
 # Exclude C++ build artifacts
 C++/build/
+C++_legacy/build/
 
 # Exclude documentation and archive folders
 DOC/

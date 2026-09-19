@@ -7,7 +7,7 @@ framework. The model implemented here is based on the methodology
 reported by Jones et al. (2025) in *Building and Environment*, which
 estimates infection risk as a function of equivalent clean airflow
 rates (ECAi), viral emission characteristics, occupant behavior, and
-space properties. These tools reproduce and extend the simulations
+space properties. These tools implement and extend the simulations
 described in that publication.
 
 All commands below should be run from this directory (`Python/`).
@@ -128,7 +128,7 @@ Analysis
 The `analysis/` folder contains post-processing tools that operate on the
 raw simulation data. Python scripts `percentiles.py` and `boxplot.py` read
 the `.npz` format produced by `probabilityECAi.py --save-all`. The remaining
-scripts read the C++ `.bin` format produced by `C++/build/probability_ecai
+scripts read the C++ `.bin` format produced by `C++_legacy/build/probability_ecai
 --save-all` via the `bin_reader.py` utility.
 
 **analysis/percentiles.py**
@@ -153,7 +153,7 @@ scripts read the C++ `.bin` format produced by `C++/build/probability_ecai
 
 **analysis/bin_reader.py**
 - Utility that reads the C++ binary raw-data format (`.bin`) produced by
-  `C++/build/probability_ecai --save-all`. Returns a dict of numpy arrays.
+  `C++_legacy/build/probability_ecai --save-all`. Returns a dict of numpy arrays.
 - Used by all C++-format analysis scripts below.
 - *Example:*
     ```
@@ -265,11 +265,17 @@ Simulation Details
 - **Performance:** Batch size for LHS buffers is configurable (default: 1,000,000).
 - **Sanity-checking:** Parameter distributions can be visualized with `qer.py` or `distributions.py`.
 
-C++ Port
---------
+C++ Ports
+---------
 
-A high-performance C++17 port of this simulation is available in the
-`C++/` directory (at the repository root). It produces statistically
-equivalent results with a ~20x speedup over this Python implementation.
-Build instructions, benchmarks, and validation results are in
-`C++/README.md`.
+Two C++17 ports of this simulation are available at the repository root:
+
+- `C++_legacy/` — the original C++ port. It uses the same model equations
+  and parameters as this Python implementation, with a ~20x speedup.
+  Build instructions, benchmarks, and validation results are in
+  `C++_legacy/README.md`.
+- `C++/` — the current C++ implementation (`ecai_cpp2`), which reworks the
+  sampling design (aggregate-demand-conditioned marginal one-dimensional
+  LHS). Numerical results depend on implementation details, sampling, and
+  inputs, and may differ from this Python implementation and from
+  `C++_legacy/`. See `C++/README.md`.
