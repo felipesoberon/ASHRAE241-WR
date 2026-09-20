@@ -307,17 +307,138 @@ std::vector<std::size_t> build_schedule(const std::vector<std::size_t>& active_i
     throw std::invalid_argument("simulation: unknown EvaluationOrder");
 }
 
-// Step 3's probability-mode counterpart. Row loop, QER accumulation and
-// scratch-vector reuse are identical to the ECAi loop in
-// run_replicate_from_banks; only the per-row model call and the fields it
-// writes differ (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.3).
-// Kept as a separate function, rather than inlined into the ECAi loop, so
-// that loop's text stays byte-identical to its pre-probability-mode form.
+// One active row's ECAi evaluation (Jones/full-QER family). Factored out of
+// run_replicate_from_banks' ECAi loop so the schedule-based path (reverse,
+// interleaved, or collect_audit=true) and the fused forward/no-audit path
+// below execute the exact same statements in the exact same order for a
+// given row -- the two paths differ only in how a row is discovered, never
+// in what happens once it is.
+void evaluate_ecai_row(std::size_t row, const sampling_plan::SimulationAssignment& simulation,
+                        model::ECAiInputs& inputs, const ReplicateOptions& options,
+                        ReplicateResult& result) {
+    double qer_sum_per_h = 0.0;
+    for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
+        const double qer = model::compute_qer(infector).qer_per_h;
+        model::require_qer_value(qer, "ECAi QER_i");
+        qer_sum_per_h += qer;
+        ++result.counters.qer_evaluations;
+    }
+    if (!std::isfinite(qer_sum_per_h)) {
+        throw std::runtime_error("ECAi QER_sum overflowed while summing the supplied QER values");
+    }
+
+    inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+    inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+    inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+    const model::ECAiResult ecai = model::compute_ecai_from_qer_sum(inputs, qer_sum_per_h);
+    ++result.counters.ecai_evaluations;
+    if (ecai.clamped) {
+        ++result.counters.negative_clamp_count;
+    }
+    if (!std::isfinite(ecai.ecai_l_s_person)) {
+        throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
+                                  std::to_string(row));
+    }
+    result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
+    if (options.collect_audit) {
+        RowAudit& audit_row = result.audit.rows[row];
+        audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
+        audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
+        audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
+        audit_row.clamped = ecai.clamped;
+    }
+}
+
+// Package 3b's direct-QER counterpart of evaluate_ecai_row above: identical
+// except that each infector's QER comes directly from
+// FamilyInfectorAssignment::direct_qer_quanta_per_h rather than from
+// model::compute_qer(InfectorParameters).
+void evaluate_family_ecai_row(std::size_t row,
+                               const sampling_plan::FamilySimulationAssignment& simulation,
+                               model::ECAiInputs& inputs, const ReplicateOptions& options,
+                               ReplicateResult& result) {
+    double qer_sum_per_h = 0.0;
+    for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
+        const double qer = infector.direct_qer_quanta_per_h;
+        model::require_qer_value(qer, "ECAi QER_i");
+        qer_sum_per_h += qer;
+        ++result.counters.qer_evaluations;
+    }
+    if (!std::isfinite(qer_sum_per_h)) {
+        throw std::runtime_error("ECAi QER_sum overflowed while summing the supplied QER values");
+    }
+
+    inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+    inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+    inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+    const model::ECAiResult ecai = model::compute_ecai_from_qer_sum(inputs, qer_sum_per_h);
+    ++result.counters.ecai_evaluations;
+    if (ecai.clamped) {
+        ++result.counters.negative_clamp_count;
+    }
+    if (!std::isfinite(ecai.ecai_l_s_person)) {
+        throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
+                                  std::to_string(row));
+    }
+    result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
+    if (options.collect_audit) {
+        RowAudit& audit_row = result.audit.rows[row];
+        audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
+        audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
+        audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
+        audit_row.clamped = ecai.clamped;
+    }
+}
+
+// Step 3's probability-mode counterpart of evaluate_ecai_row above: same
+// per-row shape (QER accumulation, then one model call), reused by both the
+// schedule-based loop and the fused forward/no-audit loop
+// (docs/PROBABILITY_MODE_IMPLEMENTATION_PLAN.md section 4.3).
+void evaluate_probability_row(std::size_t row, const sampling_plan::SimulationAssignment& simulation,
+                               model::ProbabilityInputs& inputs, const ReplicateOptions& options,
+                               ReplicateResult& result) {
+    double qer_sum_per_h = 0.0;
+    for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
+        const double qer = model::compute_qer(infector).qer_per_h;
+        model::require_qer_value(qer, "Probability QER_i");
+        qer_sum_per_h += qer;
+        ++result.counters.qer_evaluations;
+    }
+    if (!std::isfinite(qer_sum_per_h)) {
+        throw std::runtime_error(
+            "Probability QER_sum overflowed while summing the supplied QER values");
+    }
+
+    inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+    inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+    inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+    const model::ProbabilityResult probability =
+        model::compute_probability_from_qer_sum(inputs, qer_sum_per_h);
+    ++result.counters.probability_evaluations;
+    if (probability.saturated) {
+        ++result.counters.saturated_count;
+    }
+    if (!std::isfinite(probability.probability)) {
+        throw std::runtime_error(
+            "simulation: a nonfinite probability was produced at simulation " +
+            std::to_string(row));
+    }
+    result.probability[row] = probability.probability;
+    if (options.collect_audit) {
+        RowAudit& audit_row = result.audit.rows[row];
+        audit_row.qer_sum_per_h = probability.qer_sum_per_h;
+        audit_row.probability = probability.probability;
+        audit_row.saturated = probability.saturated;
+    }
+}
+
 void evaluate_probability_schedule(const std::vector<std::size_t>& schedule,
                                     const sampling_plan::ReplicateAssignments& assignments,
                                     const EffectiveScenario& scenario,
                                     const ReplicateOptions& options, ReplicateResult& result) {
-    std::vector<double> qer_per_h;
     model::ProbabilityInputs inputs;
     inputs.volume_m3 = scenario.volume_m3;
     inputs.occupants = scenario.occupants;
@@ -325,49 +446,60 @@ void evaluate_probability_schedule(const std::vector<std::size_t>& schedule,
     inputs.duration_h = scenario.duration_hours;
     inputs.input_ecai_l_s_person = scenario.input_ecai_l_s_person;
     for (const std::size_t row : schedule) {
-        const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
-        qer_per_h.clear();
-        qer_per_h.reserve(simulation.infectors.size());
-        for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
-            qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
-            ++result.counters.qer_evaluations;
-        }
-
-        inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
-        inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
-        inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
-
-        const model::ProbabilityResult probability = model::compute_probability(inputs, qer_per_h);
-        ++result.counters.probability_evaluations;
-        if (probability.saturated) {
-            ++result.counters.saturated_count;
-        }
-        if (!std::isfinite(probability.probability)) {
-            throw std::runtime_error(
-                "simulation: a nonfinite probability was produced at simulation " +
-                std::to_string(row));
-        }
-        result.probability[row] = probability.probability;
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.qer_sum_per_h = probability.qer_sum_per_h;
-            audit_row.probability = probability.probability;
-            audit_row.saturated = probability.saturated;
-        }
+        evaluate_probability_row(row, assignments.simulations[row], inputs, options, result);
     }
 }
 
-// Package 3b's direct-QER counterpart of evaluate_probability_schedule above:
-// row loop and scratch-vector reuse are identical; the only difference is
-// that each infector's QER comes directly from
+// Package 3b's direct-QER counterpart of evaluate_probability_row above: the
+// row loop and QER accumulation are identical; the only difference is that
+// each infector's QER comes directly from
 // FamilyInfectorAssignment::direct_qer_quanta_per_h -- already computed once
 // when the direct-QER bank was generated -- rather than from
 // model::compute_qer(InfectorParameters).
+void evaluate_family_probability_row(std::size_t row,
+                                      const sampling_plan::FamilySimulationAssignment& simulation,
+                                      model::ProbabilityInputs& inputs, const ReplicateOptions& options,
+                                      ReplicateResult& result) {
+    double qer_sum_per_h = 0.0;
+    for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
+        const double qer = infector.direct_qer_quanta_per_h;
+        model::require_qer_value(qer, "Probability QER_i");
+        qer_sum_per_h += qer;
+        ++result.counters.qer_evaluations;
+    }
+    if (!std::isfinite(qer_sum_per_h)) {
+        throw std::runtime_error(
+            "Probability QER_sum overflowed while summing the supplied QER values");
+    }
+
+    inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
+    inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
+    inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
+
+    const model::ProbabilityResult probability =
+        model::compute_probability_from_qer_sum(inputs, qer_sum_per_h);
+    ++result.counters.probability_evaluations;
+    if (probability.saturated) {
+        ++result.counters.saturated_count;
+    }
+    if (!std::isfinite(probability.probability)) {
+        throw std::runtime_error(
+            "simulation: a nonfinite probability was produced at simulation " +
+            std::to_string(row));
+    }
+    result.probability[row] = probability.probability;
+    if (options.collect_audit) {
+        RowAudit& audit_row = result.audit.rows[row];
+        audit_row.qer_sum_per_h = probability.qer_sum_per_h;
+        audit_row.probability = probability.probability;
+        audit_row.saturated = probability.saturated;
+    }
+}
+
 void evaluate_family_probability_schedule(const std::vector<std::size_t>& schedule,
                                            const sampling_plan::FamilyReplicateAssignments& assignments,
                                            const EffectiveScenario& scenario,
                                            const ReplicateOptions& options, ReplicateResult& result) {
-    std::vector<double> qer_per_h;
     model::ProbabilityInputs inputs;
     inputs.volume_m3 = scenario.volume_m3;
     inputs.occupants = scenario.occupants;
@@ -375,35 +507,7 @@ void evaluate_family_probability_schedule(const std::vector<std::size_t>& schedu
     inputs.duration_h = scenario.duration_hours;
     inputs.input_ecai_l_s_person = scenario.input_ecai_l_s_person;
     for (const std::size_t row : schedule) {
-        const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
-        qer_per_h.clear();
-        qer_per_h.reserve(simulation.infectors.size());
-        for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
-            qer_per_h.push_back(infector.direct_qer_quanta_per_h);
-            ++result.counters.qer_evaluations;
-        }
-
-        inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
-        inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
-        inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
-
-        const model::ProbabilityResult probability = model::compute_probability(inputs, qer_per_h);
-        ++result.counters.probability_evaluations;
-        if (probability.saturated) {
-            ++result.counters.saturated_count;
-        }
-        if (!std::isfinite(probability.probability)) {
-            throw std::runtime_error(
-                "simulation: a nonfinite probability was produced at simulation " +
-                std::to_string(row));
-        }
-        result.probability[row] = probability.probability;
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.qer_sum_per_h = probability.qer_sum_per_h;
-            audit_row.probability = probability.probability;
-            audit_row.saturated = probability.saturated;
-        }
+        evaluate_family_probability_row(row, assignments.simulations[row], inputs, options, result);
     }
 }
 
@@ -425,22 +529,31 @@ double percentile_linear(const std::vector<double>& values, double p) {
         throw std::invalid_argument("percentile_linear: p must lie in [0, 1]");
     }
 
-    // A sorted copy: the caller's index-ordered vector is never reordered.
-    std::vector<double> sorted(values);
-    std::sort(sorted.begin(), sorted.end());
+    // A working copy: the caller's index-ordered vector is never reordered.
+    std::vector<double> working(values);
 
     // Frozen convention (D8 / section 12): rank = p * (n - 1), interpolated
     // linearly between the order statistics at floor(rank) and ceil(rank).
-    const double rank = p * static_cast<double>(sorted.size() - 1);
+    const double rank = p * static_cast<double>(working.size() - 1);
     const double floor_rank = std::floor(rank);
     const double ceil_rank = std::ceil(rank);
-    if (!(floor_rank >= 0.0) || !(ceil_rank <= static_cast<double>(sorted.size() - 1))) {
+    if (!(floor_rank >= 0.0) || !(ceil_rank <= static_cast<double>(working.size() - 1))) {
         throw std::runtime_error("percentile_linear: interpolation rank fell outside the list");
     }
     const std::size_t lo = static_cast<std::size_t>(floor_rank);
     const std::size_t hi = static_cast<std::size_t>(ceil_rank);
     const double frac = rank - floor_rank;
-    return sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
+
+    // Only the two order statistics at lo and hi (hi is lo or lo + 1) are
+    // needed, so select them in O(n) instead of sorting the whole vector.
+    // nth_element guarantees working[lo] equals the lo-th order statistic and
+    // partitions the remainder so its minimum equals the (lo + 1)-th.
+    const auto lo_it = working.begin() + static_cast<std::ptrdiff_t>(lo);
+    std::nth_element(working.begin(), lo_it, working.end());
+    const double lo_value = *lo_it;
+    const double hi_value =
+        (hi == lo) ? lo_value : *std::min_element(lo_it + 1, working.end());
+    return lo_value * (1.0 - frac) + hi_value * frac;
 }
 
 EffectiveScenario resolve_scenario(const OccupancyCategory& category,
@@ -600,99 +713,121 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     if (options.collect_audit) {
         result.audit.rows.resize(plan.n);
     }
-    std::vector<std::size_t> active_indices;
-    active_indices.reserve(assignments.n_active);
-    for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
-        const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
-        if (simulation.simulation_index != row) {
-            throw std::runtime_error("simulation: assignments are not in simulation index order");
-        }
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.simulation_index = row;
-            audit_row.infector_count = simulation.infector_count;
-            audit_row.active = simulation.active;
-        }
-        if (!simulation.active) {
-            continue;
-        }
-        active_indices.push_back(row);
-        result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
-        result.counters.infector_values_consumed +=
-            simulation.infectors.size() * sampling_plan::InfectorParameters{}.ids.size();
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.susceptible_ids = simulation.susceptible.ids;
-            audit_row.infector_ids.reserve(simulation.infectors.size());
-            for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
-                audit_row.infector_ids.push_back(infector.ids);
-            }
-            for (const std::uint64_t id : simulation.susceptible.ids) {
-                result.audit.consumption_ids.push_back(id);
-            }
-            for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
-                for (const std::uint64_t id : infector.ids) {
-                    result.audit.consumption_ids.push_back(id);
+
+    // Step 3 (forward, collect_audit=false only): the schedule is exactly
+    // the active rows in ascending simulation index -- the same order this
+    // pass already discovers them in -- and there is no audit.evaluation_
+    // order to populate, so each active row is evaluated as soon as it is
+    // found, without ever materializing an active_indices vector or the
+    // schedule copy build_schedule(active_indices, forward) would otherwise
+    // return. Each active row's evaluation (counters, per-row model call,
+    // output write) is identical to how the schedule-based path in the else
+    // branch evaluates that same row; only the interleaving with the
+    // simulation-index validation differs between the two branches, not any
+    // individual row's result.
+    if (!options.collect_audit && options.evaluation_order == EvaluationOrder::forward) {
+        if (scenario.mode == OutputMode::ecai) {
+            model::ECAiInputs inputs;
+            inputs.volume_m3 = scenario.volume_m3;
+            inputs.occupants = scenario.occupants;
+            inputs.mask_efficiency = scenario.mask_efficiency;
+            inputs.duration_h = scenario.duration_hours;
+            inputs.target_probability = scenario.target_probability;
+            for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+                const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
+                if (simulation.simulation_index != row) {
+                    throw std::runtime_error("simulation: assignments are not in simulation index order");
                 }
+                if (!simulation.active) {
+                    continue;
+                }
+                result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+                result.counters.infector_values_consumed +=
+                    simulation.infectors.size() * sampling_plan::InfectorParameters{}.ids.size();
+                evaluate_ecai_row(row, simulation, inputs, options, result);
             }
-        }
-    }
-
-    // Step 3: evaluate the active rows on the requested schedule, writing
-    // each result back to its own stable simulation index. Infectors within
-    // a row are always summed in list order, so no schedule can change a
-    // row's QER sum.
-    const std::vector<std::size_t> schedule =
-        build_schedule(active_indices, options.evaluation_order);
-    if (options.collect_audit) {
-        result.audit.evaluation_order = schedule;
-    }
-    if (scenario.mode == OutputMode::ecai) {
-        // One scratch QER list for the whole schedule: it is emptied and then
-        // filled in list order for each row, so its contents when compute_ecai
-        // runs are exactly that row's per-infector QERs in the same order as
-        // before. The room-level inputs are the same for every row and are set
-        // once; only the susceptible's three values change per row.
-        std::vector<double> qer_per_h;
-        model::ECAiInputs inputs;
-        inputs.volume_m3 = scenario.volume_m3;
-        inputs.occupants = scenario.occupants;
-        inputs.mask_efficiency = scenario.mask_efficiency;
-        inputs.duration_h = scenario.duration_hours;
-        inputs.target_probability = scenario.target_probability;
-        for (const std::size_t row : schedule) {
-            const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
-            qer_per_h.clear();
-            qer_per_h.reserve(simulation.infectors.size());
-            for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
-                qer_per_h.push_back(model::compute_qer(infector).qer_per_h);
-                ++result.counters.qer_evaluations;
-            }
-
-            inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
-            inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
-            inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
-
-            const model::ECAiResult ecai = model::compute_ecai(inputs, qer_per_h);
-            ++result.counters.ecai_evaluations;
-            if (ecai.clamped) {
-                ++result.counters.negative_clamp_count;
-            }
-            if (!std::isfinite(ecai.ecai_l_s_person)) {
-                throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
-                                          std::to_string(row));
-            }
-            result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
-            if (options.collect_audit) {
-                RowAudit& audit_row = result.audit.rows[row];
-                audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
-                audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
-                audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
-                audit_row.clamped = ecai.clamped;
+        } else {
+            model::ProbabilityInputs inputs;
+            inputs.volume_m3 = scenario.volume_m3;
+            inputs.occupants = scenario.occupants;
+            inputs.mask_efficiency = scenario.mask_efficiency;
+            inputs.duration_h = scenario.duration_hours;
+            inputs.input_ecai_l_s_person = scenario.input_ecai_l_s_person;
+            for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+                const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
+                if (simulation.simulation_index != row) {
+                    throw std::runtime_error("simulation: assignments are not in simulation index order");
+                }
+                if (!simulation.active) {
+                    continue;
+                }
+                result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+                result.counters.infector_values_consumed +=
+                    simulation.infectors.size() * sampling_plan::InfectorParameters{}.ids.size();
+                evaluate_probability_row(row, simulation, inputs, options, result);
             }
         }
     } else {
-        evaluate_probability_schedule(schedule, assignments, scenario, options, result);
+        std::vector<std::size_t> active_indices;
+        active_indices.reserve(assignments.n_active);
+        for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+            const sampling_plan::SimulationAssignment& simulation = assignments.simulations[row];
+            if (simulation.simulation_index != row) {
+                throw std::runtime_error("simulation: assignments are not in simulation index order");
+            }
+            if (options.collect_audit) {
+                RowAudit& audit_row = result.audit.rows[row];
+                audit_row.simulation_index = row;
+                audit_row.infector_count = simulation.infector_count;
+                audit_row.active = simulation.active;
+            }
+            if (!simulation.active) {
+                continue;
+            }
+            active_indices.push_back(row);
+            result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+            result.counters.infector_values_consumed +=
+                simulation.infectors.size() * sampling_plan::InfectorParameters{}.ids.size();
+            if (options.collect_audit) {
+                RowAudit& audit_row = result.audit.rows[row];
+                audit_row.susceptible_ids = simulation.susceptible.ids;
+                audit_row.infector_ids.reserve(simulation.infectors.size());
+                for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
+                    audit_row.infector_ids.push_back(infector.ids);
+                }
+                for (const std::uint64_t id : simulation.susceptible.ids) {
+                    result.audit.consumption_ids.push_back(id);
+                }
+                for (const sampling_plan::InfectorParameters& infector : simulation.infectors) {
+                    for (const std::uint64_t id : infector.ids) {
+                        result.audit.consumption_ids.push_back(id);
+                    }
+                }
+            }
+        }
+
+        // Step 3: evaluate the active rows on the requested schedule,
+        // writing each result back to its own stable simulation index.
+        // Infectors within a row are always summed in list order, so no
+        // schedule can change a row's QER sum.
+        const std::vector<std::size_t> schedule =
+            build_schedule(active_indices, options.evaluation_order);
+        if (options.collect_audit) {
+            result.audit.evaluation_order = schedule;
+        }
+        if (scenario.mode == OutputMode::ecai) {
+            model::ECAiInputs inputs;
+            inputs.volume_m3 = scenario.volume_m3;
+            inputs.occupants = scenario.occupants;
+            inputs.mask_efficiency = scenario.mask_efficiency;
+            inputs.duration_h = scenario.duration_hours;
+            inputs.target_probability = scenario.target_probability;
+            for (const std::size_t row : schedule) {
+                evaluate_ecai_row(row, assignments.simulations[row], inputs, options, result);
+            }
+        } else {
+            evaluate_probability_schedule(schedule, assignments, scenario, options, result);
+        }
     }
 
     for (const double value : outputs) {
@@ -776,89 +911,109 @@ ReplicateResult run_replicate_from_family_banks(const sampling_plan::SamplingPla
     if (options.collect_audit) {
         result.audit.rows.resize(plan.n);
     }
-    std::vector<std::size_t> active_indices;
-    active_indices.reserve(assignments.n_active);
-    for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
-        const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
-        if (simulation.simulation_index != row) {
-            throw std::runtime_error("simulation: assignments are not in simulation index order");
-        }
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.simulation_index = row;
-            audit_row.infector_count = simulation.infector_count;
-            audit_row.active = simulation.active;
-        }
-        if (!simulation.active) {
-            continue;
-        }
-        active_indices.push_back(row);
-        result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
-        // One direct-QER value per infector, not eight: the direct-family
-        // persistent-bank formula is N + 3*N_active + K_total, not
-        // N + 3*N_active + 8*K_total (docs/QER_DISTRIBUTION_IMPLEMENTATION_
-        // PLAN.md Phase 3).
-        result.counters.infector_values_consumed += simulation.infectors.size();
-        if (options.collect_audit) {
-            RowAudit& audit_row = result.audit.rows[row];
-            audit_row.susceptible_ids = simulation.susceptible.ids;
-            for (const std::uint64_t id : simulation.susceptible.ids) {
-                result.audit.consumption_ids.push_back(id);
-            }
-            for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
-                result.audit.consumption_ids.push_back(infector.id);
-            }
-        }
-    }
 
-    // Step 3: evaluate the active rows on the requested schedule, writing
-    // each result back to its own stable simulation index.
-    const std::vector<std::size_t> schedule =
-        build_schedule(active_indices, options.evaluation_order);
-    if (options.collect_audit) {
-        result.audit.evaluation_order = schedule;
-    }
-    if (scenario.mode == OutputMode::ecai) {
-        std::vector<double> qer_per_h;
-        model::ECAiInputs inputs;
-        inputs.volume_m3 = scenario.volume_m3;
-        inputs.occupants = scenario.occupants;
-        inputs.mask_efficiency = scenario.mask_efficiency;
-        inputs.duration_h = scenario.duration_hours;
-        inputs.target_probability = scenario.target_probability;
-        for (const std::size_t row : schedule) {
-            const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
-            qer_per_h.clear();
-            qer_per_h.reserve(simulation.infectors.size());
-            for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
-                qer_per_h.push_back(infector.direct_qer_quanta_per_h);
-                ++result.counters.qer_evaluations;
+    // Step 3 (forward, collect_audit=false only): mirrors the fused forward
+    // path in run_replicate_from_banks. Each active row's evaluation
+    // (counters, per-row model call, output write) is identical to how the
+    // scheduled path in the else branch below evaluates that same row; only
+    // the interleaving with the simulation-index validation differs between
+    // the two branches, not any individual row's result.
+    if (!options.collect_audit && options.evaluation_order == EvaluationOrder::forward) {
+        if (scenario.mode == OutputMode::ecai) {
+            model::ECAiInputs inputs;
+            inputs.volume_m3 = scenario.volume_m3;
+            inputs.occupants = scenario.occupants;
+            inputs.mask_efficiency = scenario.mask_efficiency;
+            inputs.duration_h = scenario.duration_hours;
+            inputs.target_probability = scenario.target_probability;
+            for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+                const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
+                if (simulation.simulation_index != row) {
+                    throw std::runtime_error("simulation: assignments are not in simulation index order");
+                }
+                if (!simulation.active) {
+                    continue;
+                }
+                result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+                result.counters.infector_values_consumed += simulation.infectors.size();
+                evaluate_family_ecai_row(row, simulation, inputs, options, result);
             }
-
-            inputs.susceptible_pbr_m3h = simulation.susceptible.pbr_m3h;
-            inputs.gamma_per_h = simulation.susceptible.gamma_per_h;
-            inputs.lambda_per_h = simulation.susceptible.lambda_per_h;
-
-            const model::ECAiResult ecai = model::compute_ecai(inputs, qer_per_h);
-            ++result.counters.ecai_evaluations;
-            if (ecai.clamped) {
-                ++result.counters.negative_clamp_count;
-            }
-            if (!std::isfinite(ecai.ecai_l_s_person)) {
-                throw std::runtime_error("simulation: a nonfinite ECAi was produced at simulation " +
-                                          std::to_string(row));
-            }
-            result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
-            if (options.collect_audit) {
-                RowAudit& audit_row = result.audit.rows[row];
-                audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
-                audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
-                audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
-                audit_row.clamped = ecai.clamped;
+        } else {
+            model::ProbabilityInputs inputs;
+            inputs.volume_m3 = scenario.volume_m3;
+            inputs.occupants = scenario.occupants;
+            inputs.mask_efficiency = scenario.mask_efficiency;
+            inputs.duration_h = scenario.duration_hours;
+            inputs.input_ecai_l_s_person = scenario.input_ecai_l_s_person;
+            for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+                const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
+                if (simulation.simulation_index != row) {
+                    throw std::runtime_error("simulation: assignments are not in simulation index order");
+                }
+                if (!simulation.active) {
+                    continue;
+                }
+                result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+                result.counters.infector_values_consumed += simulation.infectors.size();
+                evaluate_family_probability_row(row, simulation, inputs, options, result);
             }
         }
     } else {
-        evaluate_family_probability_schedule(schedule, assignments, scenario, options, result);
+        std::vector<std::size_t> active_indices;
+        active_indices.reserve(assignments.n_active);
+        for (std::size_t row = 0; row < assignments.simulations.size(); ++row) {
+            const sampling_plan::FamilySimulationAssignment& simulation = assignments.simulations[row];
+            if (simulation.simulation_index != row) {
+                throw std::runtime_error("simulation: assignments are not in simulation index order");
+            }
+            if (options.collect_audit) {
+                RowAudit& audit_row = result.audit.rows[row];
+                audit_row.simulation_index = row;
+                audit_row.infector_count = simulation.infector_count;
+                audit_row.active = simulation.active;
+            }
+            if (!simulation.active) {
+                continue;
+            }
+            active_indices.push_back(row);
+            result.counters.susceptible_values_consumed += simulation.susceptible.ids.size();
+            // One direct-QER value per infector, not eight: the direct-family
+            // persistent-bank formula is N + 3*N_active + K_total, not
+            // N + 3*N_active + 8*K_total (docs/QER_DISTRIBUTION_IMPLEMENTATION_
+            // PLAN.md Phase 3).
+            result.counters.infector_values_consumed += simulation.infectors.size();
+            if (options.collect_audit) {
+                RowAudit& audit_row = result.audit.rows[row];
+                audit_row.susceptible_ids = simulation.susceptible.ids;
+                for (const std::uint64_t id : simulation.susceptible.ids) {
+                    result.audit.consumption_ids.push_back(id);
+                }
+                for (const sampling_plan::FamilyInfectorAssignment& infector : simulation.infectors) {
+                    result.audit.consumption_ids.push_back(infector.id);
+                }
+            }
+        }
+
+        // Step 3: evaluate the active rows on the requested schedule, writing
+        // each result back to its own stable simulation index.
+        const std::vector<std::size_t> schedule =
+            build_schedule(active_indices, options.evaluation_order);
+        if (options.collect_audit) {
+            result.audit.evaluation_order = schedule;
+        }
+        if (scenario.mode == OutputMode::ecai) {
+            model::ECAiInputs inputs;
+            inputs.volume_m3 = scenario.volume_m3;
+            inputs.occupants = scenario.occupants;
+            inputs.mask_efficiency = scenario.mask_efficiency;
+            inputs.duration_h = scenario.duration_hours;
+            inputs.target_probability = scenario.target_probability;
+            for (const std::size_t row : schedule) {
+                evaluate_family_ecai_row(row, assignments.simulations[row], inputs, options, result);
+            }
+        } else {
+            evaluate_family_probability_schedule(schedule, assignments, scenario, options, result);
+        }
     }
 
     for (const double value : outputs) {

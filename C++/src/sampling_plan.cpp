@@ -486,16 +486,20 @@ ParameterBank build_one_bank(const seed_manager::SeedManager& seeds,
     bank.seed = seeds.derive_seed(config, replicate_index, traits.stream,
                                    static_cast<std::uint64_t>(length));
     bank.generated = true;
-    const std::vector<double> uniforms = lhs::generate_lhs_1d(length, bank.seed);
-    bank.values.reserve(length);
-    for (std::size_t i = 0; i < uniforms.size(); ++i) {
-        const double value = transform_value(traits.bank, uniforms[i], category);
+    // Transform the generated LHS vector in place rather than allocating a
+    // second same-length vector for the transformed values: `values` starts
+    // as the raw LHS draws and each element is overwritten with its own
+    // transform, in the same index order the two-vector form used.
+    std::vector<double> values = lhs::generate_lhs_1d(length, bank.seed);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const double value = transform_value(traits.bank, values[i], category);
         if (!std::isfinite(value)) {
             throw std::runtime_error("build_one_bank: bank " + std::string(traits.name) + " index " +
                                       std::to_string(i) + " transformed to a nonfinite value");
         }
-        bank.values.push_back(value);
+        values[i] = value;
     }
+    bank.values = std::move(values);
     return bank;
 }
 
@@ -595,17 +599,20 @@ ParameterBanks build_parameter_banks(const seed_manager::SeedManager& seeds,
         bank.seed = seeds.derive_seed(config, replicate_index, traits.stream,
                                        static_cast<std::uint64_t>(length));
         bank.generated = true;
-        const std::vector<double> uniforms = lhs::generate_lhs_1d(length, bank.seed);
-        bank.values.reserve(length);
-        for (std::size_t i = 0; i < uniforms.size(); ++i) {
-            const double value = transform_value(traits.bank, uniforms[i], category);
+        // Transform the generated LHS vector in place (see build_one_bank)
+        // instead of allocating a second same-length vector for the
+        // transformed values.
+        std::vector<double> values = lhs::generate_lhs_1d(length, bank.seed);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            const double value = transform_value(traits.bank, values[i], category);
             if (!std::isfinite(value)) {
                 throw std::runtime_error("build_parameter_banks: bank " +
                                           std::string(traits.name) + " index " +
                                           std::to_string(i) + " transformed to a nonfinite value");
             }
-            bank.values.push_back(value);
+            values[i] = value;
         }
+        bank.values = std::move(values);
         result.banks[static_cast<std::size_t>(traits.bank)] = std::move(bank);
     }
     return result;
@@ -752,7 +759,9 @@ ReplicateAssignments assign_replicate(ParameterCursor& cursor, const SamplingPla
     ReplicateAssignments assignments;
     assignments.n_active = plan.n_active;
     assignments.k_total = plan.k_total;
+    assignments.infector_storage.resize(plan.k_total);
     assignments.simulations.reserve(plan.n);
+    std::size_t infector_offset = 0;
     for (std::size_t i = 0; i < plan.counts.size(); ++i) {
         SimulationAssignment row;
         row.simulation_index = i;
@@ -764,10 +773,13 @@ ReplicateAssignments assign_replicate(ParameterCursor& cursor, const SamplingPla
         }
         row.active = true;
         row.susceptible = cursor.take_susceptible();
-        row.infectors.reserve(static_cast<std::size_t>(plan.counts[i]));
-        for (long long k = 0; k < plan.counts[i]; ++k) {
-            row.infectors.push_back(cursor.take_infector());
+        const std::size_t count = static_cast<std::size_t>(plan.counts[i]);
+        InfectorParameters* slice = assignments.infector_storage.data() + infector_offset;
+        for (std::size_t k = 0; k < count; ++k) {
+            slice[k] = cursor.take_infector();
         }
+        row.infectors = InfectorRow<InfectorParameters>(slice, count);
+        infector_offset += count;
         assignments.simulations.push_back(std::move(row));
     }
 
@@ -915,18 +927,21 @@ FamilyParameterBanks build_family_parameter_banks(
                                              seed_manager::StreamId::direct_qer,
                                              static_cast<std::uint64_t>(plan.k_total));
             direct.generated = true;
-            const std::vector<double> uniforms = lhs::generate_lhs_1d(plan.k_total, direct.seed);
-            direct.values.reserve(plan.k_total);
-            for (std::size_t i = 0; i < uniforms.size(); ++i) {
+            // Transform the generated LHS vector in place (see
+            // build_one_bank) instead of allocating a second same-length
+            // vector for the transformed direct-QER values.
+            std::vector<double> values = lhs::generate_lhs_1d(plan.k_total, direct.seed);
+            for (std::size_t i = 0; i < values.size(); ++i) {
                 const double value =
-                    qer_direct::sample_direct_qer_log10normal(uniforms[i], direct_params);
+                    qer_direct::sample_direct_qer_log10normal(values[i], direct_params);
                 if (!std::isfinite(value)) {
                     throw std::runtime_error("build_family_parameter_banks: direct-QER bank index " +
                                               std::to_string(i) +
                                               " transformed to a nonfinite value");
                 }
-                direct.values.push_back(value);
+                values[i] = value;
             }
+            direct.values = std::move(values);
         }
         result.direct_qer_bank = std::move(direct);
     }

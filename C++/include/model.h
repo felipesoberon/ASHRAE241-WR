@@ -70,6 +70,16 @@ struct QERResult {
 // No input is ever clamped into range; an out-of-domain value is rejected.
 QERResult compute_qer(const sampling_plan::InfectorParameters& infector);
 
+// Validates one supplied quanta emission rate (QER_i, or a pre-summed
+// QER_sum): finite and nonnegative. Throws std::invalid_argument, naming
+// `what` in the message, otherwise. This is the exact per-value check
+// compute_ecai/compute_probability's std::vector<double> overloads apply to
+// each element while summing; it is exposed here so a trusted orchestration
+// call site that accumulates QER_i values left-to-right without building
+// that temporary vector -- see simulation.cpp -- gets an identical
+// exception contract without duplicating the check.
+void require_qer_value(double value, const char* what);
+
 // ===================================================================
 // Stage 9: ECAi calculation (frozen inversion) and the zero-QER case.
 //

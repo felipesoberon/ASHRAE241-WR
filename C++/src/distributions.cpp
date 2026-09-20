@@ -171,6 +171,24 @@ double incomplete_beta_continued_fraction(double a, double b, double x) {
     return h;
 }
 
+// Shared body of regularized_incomplete_beta, taking the caller-supplied
+// log_beta = lgamma(a+b) - lgamma(a) - lgamma(b) rather than recomputing it.
+// log_beta depends only on (a, b), not x, so a caller evaluating this at many
+// x for the same fixed (a, b) -- e.g. beta_ppf_standard's bisection loop --
+// can compute it once and pass it in, instead of repeating three lgamma
+// calls on every evaluation. Behavior (including the x<=0/x>=1 short
+// circuits and the tail-selection split) is unchanged from the inline logic
+// this factors out of regularized_incomplete_beta.
+double regularized_incomplete_beta_with_log_beta(double x, double a, double b, double log_beta) {
+    if (x <= 0.0) return 0.0;
+    if (x >= 1.0) return 1.0;
+    const double bt = std::exp(log_beta + a * std::log(x) + b * std::log1p(-x));
+    if (x < (a + 1.0) / (a + b + 2.0)) {
+        return bt * incomplete_beta_continued_fraction(a, b, x) / a;
+    }
+    return 1.0 - bt * incomplete_beta_continued_fraction(b, a, 1.0 - x) / b;
+}
+
 }  // namespace
 
 double normal_ppf(double u) {
@@ -217,11 +235,7 @@ double regularized_incomplete_beta(double x, double a, double b) {
     if (x <= 0.0) return 0.0;
     if (x >= 1.0) return 1.0;
     const double log_beta = std::lgamma(a + b) - std::lgamma(a) - std::lgamma(b);
-    const double bt = std::exp(log_beta + a * std::log(x) + b * std::log1p(-x));
-    if (x < (a + 1.0) / (a + b + 2.0)) {
-        return bt * incomplete_beta_continued_fraction(a, b, x) / a;
-    }
-    return 1.0 - bt * incomplete_beta_continued_fraction(b, a, 1.0 - x) / b;
+    return regularized_incomplete_beta_with_log_beta(x, a, b, log_beta);
 }
 
 namespace {
@@ -234,9 +248,17 @@ double beta_ppf_standard(double u, double a, double b) {
     double lo = 0.0, hi = 1.0;
     constexpr int kMaxIterations = 200;
     constexpr double kToleranceWidth = 1e-15;
+    // (a, b) are fixed for the whole bisection, so log_beta -- otherwise
+    // recomputed via three lgamma calls on every one of up to 200
+    // regularized_incomplete_beta evaluations -- is hoisted out of the loop
+    // and computed once. This is the same expression regularized_incomplete_
+    // beta would compute internally for each mid, so every cdf value below
+    // is bit-identical to what the unhoisted per-iteration call would have
+    // produced.
+    const double log_beta = std::lgamma(a + b) - std::lgamma(a) - std::lgamma(b);
     for (int i = 0; i < kMaxIterations && (hi - lo) > kToleranceWidth; ++i) {
         const double mid = 0.5 * (lo + hi);
-        const double cdf = regularized_incomplete_beta(mid, a, b);
+        const double cdf = regularized_incomplete_beta_with_log_beta(mid, a, b, log_beta);
         if (cdf < u) {
             lo = mid;
         } else {

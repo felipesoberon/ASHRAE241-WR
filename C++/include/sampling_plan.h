@@ -486,6 +486,29 @@ struct InfectorParameters {
     std::array<std::uint64_t, 8> ids{};
 };
 
+// A non-owning, read-only view over a contiguous run of `T` values, used so
+// a row's infectors do not each require their own heap allocation: every
+// active row's view is a slice of one flat, replicate-wide vector owned by
+// the enclosing ReplicateAssignments. Supports
+// exactly the read-only surface (size/empty/operator[]/begin/end) that
+// existing callers use on the vector it replaces.
+template <typename T>
+class InfectorRow {
+public:
+    InfectorRow() = default;
+    InfectorRow(const T* data, std::size_t size) : data_(data), size_(size) {}
+
+    std::size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+    const T& operator[](std::size_t index) const { return data_[index]; }
+    const T* begin() const { return data_; }
+    const T* end() const { return data_ + size_; }
+
+private:
+    const T* data_ = nullptr;
+    std::size_t size_ = 0;
+};
+
 // One simulation row of the replicate, in simulation order.
 struct SimulationAssignment {
     std::size_t simulation_index = 0;
@@ -495,17 +518,37 @@ struct SimulationAssignment {
     // simulation consumes nothing from any bank).
     bool active = false;
     SusceptibleParameters susceptible;
-    std::vector<InfectorParameters> infectors;  // size == infector_count
+    // size == infector_count; a view into the owning ReplicateAssignments'
+    // infector_storage, not a separately allocated vector.
+    InfectorRow<InfectorParameters> infectors;
 };
 
 // A completed, fully accounted traversal of one replicate.
 struct ReplicateAssignments {
+    // Flat, replicate-wide storage backing every active row's `infectors`
+    // view (InfectorRow<InfectorParameters>): exactly k_total elements, laid
+    // out contiguously in row order, each row's slice immediately following
+    // the previous row's. Sized once, up front, so no reallocation ever
+    // invalidates a view handed out from it.
+    std::vector<InfectorParameters> infector_storage;
     std::vector<SimulationAssignment> simulations;  // one row per simulation
     std::size_t n_active = 0;
     std::size_t k_total = 0;
     // Final cursor position per bank, indexed by BankId ordinal. After a
     // successful traversal each equals that bank's planned length.
     std::array<std::size_t, 11> final_cursors{};
+
+    // Copying would give the copy its own infector_storage buffer at a new
+    // address while every row's `infectors` view still points into the
+    // original's buffer, silently aliasing the wrong object. Deleted rather
+    // than deep-copied so that mistake cannot compile; moving is safe and
+    // free because the underlying buffer's address is unchanged by a move,
+    // so every view stays valid.
+    ReplicateAssignments() = default;
+    ReplicateAssignments(const ReplicateAssignments&) = delete;
+    ReplicateAssignments& operator=(const ReplicateAssignments&) = delete;
+    ReplicateAssignments(ReplicateAssignments&&) = default;
+    ReplicateAssignments& operator=(ReplicateAssignments&&) = default;
 
     // Throws std::invalid_argument for a BankId not in kAllBankIds.
     std::size_t final_cursor(BankId id) const;

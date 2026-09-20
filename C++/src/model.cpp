@@ -64,9 +64,12 @@ void require_ecai_in_range(double value, double lo, double hi, const char* field
     }
 }
 
-// One supplied quanta emission rate: finite and nonnegative. QER_i is a
-// rate of quanta emitted per hour, so a negative value is unphysical and
-// must never silently reduce ECAi. A -0.0 entry is a legitimate zero.
+}  // namespace
+
+// One supplied quanta emission rate (or pre-summed QER_sum): finite and
+// nonnegative; a -0.0 entry is a legitimate zero. Declared in model.h (not
+// file-local) so simulation.cpp's per-row loops can apply the same check
+// while accumulating QER_i values without a temporary std::vector<double>.
 void require_qer_value(double value, const char* what) {
     if (!std::isfinite(value)) {
         throw std::invalid_argument(std::string(what) + " must be finite");
@@ -75,6 +78,8 @@ void require_qer_value(double value, const char* what) {
         throw std::invalid_argument(std::string(what) + " must be nonnegative");
     }
 }
+
+namespace {
 
 // Every computed intermediate must stay finite: an overflow to +/-Inf (or a
 // NaN) is reported rather than returned as an ECAi value.
