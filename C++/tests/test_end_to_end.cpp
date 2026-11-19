@@ -119,6 +119,19 @@ double finite_number(const std::string& text) {
     return value;
 }
 
+bool bounded_reference_matches(const std::string& field, const std::string& actual,
+                               const std::string& expected) {
+    if (field != "raw_mean_l_s_person" && field != "raw_ci_lower_l_s_person" &&
+        field != "raw_ci_upper_l_s_person") {
+        return actual == expected;
+    }
+    try {
+        return std::fabs(finite_number(actual) - finite_number(expected)) <= 1e-9;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 std::string shell_quote(const std::string& text) {
     std::string result = "'";
     for (const char ch : text) result += ch == '\'' ? "'\\''" : std::string(1, ch);
@@ -235,6 +248,15 @@ int main() {
     using ecai_cpp2::model::ECAiInputs;
     using ecai_cpp2::sampling_plan::InfectorParameters;
     const fs::path source(ECAI_CPP2_SOURCE_DIR);
+
+    check(bounded_reference_matches("raw_mean_l_s_person", "1.0000000005", "1"),
+          "bounded floating-point regression accepts a difference below 1e-9");
+    check(!bounded_reference_matches("raw_mean_l_s_person", "1.000000002", "1"),
+          "bounded floating-point regression rejects a difference above 1e-9");
+    check(!bounded_reference_matches("raw_mean_l_s_person", "nan", "1"),
+          "bounded floating-point regression rejects non-finite values");
+    check(!bounded_reference_matches("all_replicates_n", "100001", "100000"),
+          "bounded regression still compares integer counters exactly");
 
     // Hard-coded deterministic algebra regression fixtures through production pure functions.
     InfectorParameters infector;
@@ -423,9 +445,9 @@ int main() {
         const CommandResult result = run_to_directory(item.at("category"), n, r, output_directory);
         check(result.exit_code == 0, item.at("category") + " bounded executable run succeeds");
         const auto generated = parse_csv(read_text(output_directory / "summary.csv"));
-        bool exact_match = generated.size() == 2 && generated[0].size() == 89 &&
+        bool reference_match = generated.size() == 2 && generated[0].size() == 89 &&
                            generated[1].size() == 89;
-        if (exact_match) {
+        if (reference_match) {
             const auto names = named_row(generated[0], generated[1]);
             const std::vector<std::pair<std::string, std::string>> mappings = {
                 {"category", "category"}, {"source_i0", "source_i0"},
@@ -453,16 +475,17 @@ int main() {
                 {"comparator_status", "comparator_status"},
                 {"sampling_design_version", "sampling_design_version"}};
             for (const auto& mapping : mappings)
-                exact_match = exact_match && names.at(mapping.first) == item.at(mapping.second);
-            exact_match = exact_match && names.at("custom_scenario") == "false" &&
+                reference_match = reference_match && bounded_reference_matches(
+                    mapping.first, names.at(mapping.first), item.at(mapping.second));
+            reference_match = reference_match && names.at("custom_scenario") == "false" &&
                 names.at("comparator_eligible") == "true" &&
                 names.at("counters_reconcile") == "true" &&
                 names.at("all_cursors_exhausted") == "true" &&
                 names.at("all_replicates_finite") == "true" &&
                 names.at("banks_reconcile") == "true";
         }
-        check(exact_match, item.at("category") +
-              " generated output exactly matches the frozen bounded regression and accounting reference");
+        check(reference_match, item.at("category") +
+              " generated output matches the bounded regression and exact accounting reference");
     }
 
     fs::remove_all(temporary.path, error);

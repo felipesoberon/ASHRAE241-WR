@@ -110,6 +110,10 @@ corresponding CI.
 These generated values are frozen at maximum round-trip precision in
 `data/reference/publication_cases.csv`. The Patient result remains a failed comparator. Museum is
 near within exactly one reporting increment, not an exact reproduction.
+The bounded regression compares the generated mean and confidence-interval endpoints with an
+absolute tolerance of 1e-9 L/s/person to allow small differences across supported numerical
+environments. Category, configuration, integer counts, comparator values and status remain
+exact comparisons. Same-seed repeatability within a build remains a byte-identical check.
 
 ## Reproducible aggregate accounting and zero mass
 

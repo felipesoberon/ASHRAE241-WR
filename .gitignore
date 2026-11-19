@@ -4,6 +4,7 @@
 *.xlsm
 *.xlsb
 *.csv
+!C++/data/reference/publication_cases.csv
 
 # Exclude raw simulation data
 *.npz
