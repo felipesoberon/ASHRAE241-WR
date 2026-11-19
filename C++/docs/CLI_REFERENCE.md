@@ -21,7 +21,7 @@ execution; there is no default category and none is inferred.
 
 ## Flags
 
-The interface accepts exactly 19 flags:
+The interface accepts 23 flags:
 
 - `--category NAME` — occupancy category. Required. No default.
 - `--simulations N` — simulations per replicate. Default `10000`.
@@ -29,6 +29,8 @@ The interface accepts exactly 19 flags:
 - `--percentile P` — percentile taken within each replicate. Default `0.96`.
 - `--confidence LEVEL` — confidence level of the across-replicate interval. Default `0.95`.
 - `--target-probability P` — target infection probability over the effective duration. Default `0.001`.
+- `--target-probabilities P,P,...` — ordered, comma-separated distinct targets for paired ECAi output. Fractions strictly in `(0,1)`; maximum 64. The first target supplies the existing seed fingerprint. Cannot be combined with `--target-probability`.
+- `--raw-output-directory PATH` — new directory for paired raw results; required with `--target-probabilities`. The parent must exist. Incompatible with other output controls and probability mode.
 - `--duration-hours HOURS` — exposure duration in hours. Default `1`.
 - `--base-seed SEED` — unsigned 64-bit base seed. Default `485`.
 - `--community-rate RATE` — community infection rate. Default: the selected category value.
@@ -232,6 +234,50 @@ publication name. CSV output is opt-in and is written only after complete
 validation of the document and destinations.
 
 ## Output files
+
+### Paired multi-target output
+
+For example, with a pre-existing parent directory:
+
+```text
+ecai_cpp2 --category "Patient room" --simulations 10000 --replicates 50 \
+  --infector-policy risk-averse --target-probabilities 0.001,0.01,0.05,0.1,0.25,0.5 \
+  --raw-output-directory /path/to/data/patient-risk-averse
+python3 analysis/read_paired.py /path/to/data/patient-risk-averse --percentiles 0.75,0.9,0.96
+```
+
+This calculates the first target through the unchanged single-target path,
+then evaluates the remaining targets with the same QER sum and susceptible
+inputs for each row. All targets share the same sampled scenarios and are
+therefore correlated. The first listed target is included in the existing
+configuration fingerprint; changing it changes the samples. Changing only
+the order of later targets does not change samples. Other fingerprint inputs,
+including the selected `--percentile`, retain their existing behavior.
+
+The program creates a **new** directory and will not overwrite an existing
+one. The parent must exist. It writes `ecai.bin.partial` during computation,
+then renames it to `ecai.bin`; `manifest.txt` is published last. A directory
+without a completed manifest represents an incomplete run and must not be
+used as a completed dataset. Interrupted partial directories are retained for
+inspection and must be handled by the operator. Paired ECAi vectors are
+limited to 1 GiB per replicate in addition to the sampler's resource policy.
+
+The binary layout is little-endian: eight-byte ASCII magic `ECAIP01\n`,
+three unsigned 64-bit integers (number of targets, simulations per
+replicate, replicates), followed by target probabilities as IEEE-754 binary64,
+then ECAi values as binary64 in replicate, target, simulation-index order.
+ECAi units are L/s/person. The manifest records effective inputs, seed,
+seed-target policy, ordered targets, source revision and content fingerprint
+at configuration time, compiler, and dimensions. The reader rejects missing
+or mismatched manifests, malformed headers, unexpected lengths, and invalid values; it does
+not authenticate the file or detect every possible bit corruption.
+
+`read_paired.py` emits a CSV row per replicate, target, and requested
+percentile using the same linear interpolation convention as the simulator.
+It keeps replicates separate; it does not claim that their interval represents
+uncertainty in model inputs. Redirect output to a new file if persistence is
+desired. The existing single-target summary and replicate-file contracts are
+unchanged.
 
 Output is opt-in. An output directory writes `summary.csv`; with
 `--write-replicates` it also writes `replicates.csv`. Explicit summary and

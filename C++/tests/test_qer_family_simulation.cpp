@@ -467,6 +467,37 @@ int main() {
             }
             const ReplicateResult result =
                 ecai_cpp2::simulation::run_replicate(99, top_config, 0, category, overrides);
+            ReplicateOptions paired_options;
+            paired_options.paired_target_probabilities = {top_config.target_probability, 0.5};
+            const ReplicateResult paired = ecai_cpp2::simulation::run_replicate(
+                99, top_config, 0, category, overrides, paired_options);
+            check(paired.ecai_l_s_person == result.ecai_l_s_person &&
+                      paired.paired_ecai_l_s_person.at(0) == result.ecai_l_s_person,
+                  "paired targets preserve original rows for family=" +
+                      ecai_cpp2::qer_direct::to_string(family));
+            bool monotone = true;
+            for (std::size_t i = 0; i < result.ecai_l_s_person.size(); ++i) {
+                if (paired.paired_ecai_l_s_person.at(1)[i] > result.ecai_l_s_person[i]) monotone = false;
+            }
+            check(monotone, "higher paired target does not increase ECAi for family=" +
+                                ecai_cpp2::qer_direct::to_string(family));
+            overrides.infector_policy = ecai_cpp2::simulation::InfectorPolicy::risk_averse;
+            paired_options.collect_audit = true;
+            const ReplicateResult conditional = ecai_cpp2::simulation::run_replicate(
+                99, top_config, 0, category, overrides, paired_options);
+            bool matches_conditional = conditional.counters.zero_infector_count == 0;
+            for (std::size_t i = 0; i < conditional.ecai_l_s_person.size(); ++i) {
+                const auto& row = conditional.audit.rows[i];
+                const double mask = 1.0 - top_config.mask_efficiency;
+                const double expected = std::max(0.0,
+                    (row.susceptible_pbr_m3h * top_config.duration_hours * mask * mask * row.qer_sum_per_h /
+                     -std::log1p(-0.5) - top_config.volume_m3 * (row.gamma_per_h + row.lambda_per_h)) /
+                    (3.6 * static_cast<double>(top_config.i0)));
+                if (std::abs(expected - conditional.paired_ecai_l_s_person.at(1)[i]) >
+                    1e-12 * std::max(1.0, std::abs(expected))) matches_conditional = false;
+            }
+            check(matches_conditional, "conditional paired values match the equation for family=" +
+                                           ecai_cpp2::qer_direct::to_string(family));
             check(result.ecai_l_s_person.size() == top_config.simulations_n,
                   "run_replicate produces N outputs for family=" +
                       ecai_cpp2::qer_direct::to_string(family));

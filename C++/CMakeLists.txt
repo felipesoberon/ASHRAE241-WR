@@ -1,6 +1,30 @@
 cmake_minimum_required(VERSION 3.16)
 project(ecai_cpp2 LANGUAGES CXX)
 
+file(GLOB ECAI_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ECAI_SOURCE_FILES})
+set(ECAI_SOURCE_HASH_INPUT "")
+foreach(source IN LISTS ECAI_SOURCE_FILES)
+    file(SHA256 "${source}" source_hash)
+    get_filename_component(source_name "${source}" NAME)
+    string(APPEND ECAI_SOURCE_HASH_INPUT "${source_name}:${source_hash}\n")
+endforeach()
+string(SHA256 ECAI_SOURCE_CONTENT_HASH "${ECAI_SOURCE_HASH_INPUT}")
+
+execute_process(COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} rev-parse HEAD
+    OUTPUT_VARIABLE ECAI_SOURCE_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT ECAI_SOURCE_REVISION)
+    set(ECAI_SOURCE_REVISION "unknown")
+endif()
+execute_process(COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} diff --quiet HEAD -- .
+    RESULT_VARIABLE ECAI_TRACKED_DIFF_RESULT ERROR_QUIET)
+if(ECAI_TRACKED_DIFF_RESULT EQUAL 0)
+    set(ECAI_SOURCE_TRACKED_DIRTY "false")
+else()
+    set(ECAI_SOURCE_TRACKED_DIRTY "true_or_unknown")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -38,14 +62,26 @@ add_executable(ecai_cpp2
     src/cli.cpp
     src/qer_direct.cpp
     src/output.cpp
+    src/paired_output.cpp
     src/main.cpp
 )
 target_include_directories(ecai_cpp2 PRIVATE include)
 target_compile_definitions(ecai_cpp2 PRIVATE
     ECAI_CPP2_PROTECTED_LEGACY_TREE="${CMAKE_CURRENT_SOURCE_DIR}/../C++_legacy"
+    ECAI_SOURCE_REVISION="${ECAI_SOURCE_REVISION}"
+    ECAI_SOURCE_TRACKED_DIRTY="${ECAI_SOURCE_TRACKED_DIRTY}"
+    ECAI_SOURCE_CONTENT_HASH="${ECAI_SOURCE_CONTENT_HASH}"
+    ECAI_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
 )
 
 enable_testing()
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME ecai_cpp2_paired_reader_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_paired_reader.py
+                ${CMAKE_BINARY_DIR})
+endif()
 
 add_executable(ecai_cpp2_tests tests/test_main.cpp)
 target_compile_definitions(ecai_cpp2_tests PRIVATE

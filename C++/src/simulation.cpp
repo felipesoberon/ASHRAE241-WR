@@ -341,8 +341,18 @@ void evaluate_ecai_row(std::size_t row, const sampling_plan::SimulationAssignmen
                                   std::to_string(row));
     }
     result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
+    const double original_target = inputs.target_probability;
+    for (std::size_t target = 0; target < options.paired_target_probabilities.size(); ++target) {
+        inputs.target_probability = options.paired_target_probabilities[target];
+        result.paired_ecai_l_s_person[target][row] =
+            model::compute_ecai_from_qer_sum(inputs, qer_sum_per_h).ecai_l_s_person;
+    }
+    inputs.target_probability = original_target;
     if (options.collect_audit) {
         RowAudit& audit_row = result.audit.rows[row];
+        audit_row.susceptible_pbr_m3h = inputs.susceptible_pbr_m3h;
+        audit_row.gamma_per_h = inputs.gamma_per_h;
+        audit_row.lambda_per_h = inputs.lambda_per_h;
         audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
         audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
         audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
@@ -383,8 +393,18 @@ void evaluate_family_ecai_row(std::size_t row,
                                   std::to_string(row));
     }
     result.ecai_l_s_person[row] = ecai.ecai_l_s_person;
+    const double original_target = inputs.target_probability;
+    for (std::size_t target = 0; target < options.paired_target_probabilities.size(); ++target) {
+        inputs.target_probability = options.paired_target_probabilities[target];
+        result.paired_ecai_l_s_person[target][row] =
+            model::compute_ecai_from_qer_sum(inputs, qer_sum_per_h).ecai_l_s_person;
+    }
+    inputs.target_probability = original_target;
     if (options.collect_audit) {
         RowAudit& audit_row = result.audit.rows[row];
+        audit_row.susceptible_pbr_m3h = inputs.susceptible_pbr_m3h;
+        audit_row.gamma_per_h = inputs.gamma_per_h;
+        audit_row.lambda_per_h = inputs.lambda_per_h;
         audit_row.qer_sum_per_h = ecai.qer_sum_per_h;
         audit_row.ecai_raw_l_s_person = ecai.ecai_raw_l_s_person;
         audit_row.ecai_l_s_person = ecai.ecai_l_s_person;
@@ -680,6 +700,13 @@ ReplicateResult run_replicate_from_banks(const sampling_plan::SamplingPlan& plan
     result.percentile = scenario.percentile;
     result.counters.n = plan.n;
     result.infector_counts = plan.counts;
+    for (double target : options.paired_target_probabilities) {
+        if (!(target > 0.0 && target < 1.0) || !std::isfinite(target) ||
+            scenario.mode != OutputMode::ecai) {
+            throw std::invalid_argument("simulation: invalid paired ECAi target");
+        }
+        result.paired_ecai_l_s_person.emplace_back(plan.n, 0.0);
+    }
 
     // Step 1: every zero-infector row becomes exactly +0.0 before any
     // assignment or model input is requested (MODEL_SPECIFICATION.md 11.1,
@@ -881,6 +908,13 @@ ReplicateResult run_replicate_from_family_banks(const sampling_plan::SamplingPla
     result.percentile = scenario.percentile;
     result.counters.n = plan.n;
     result.infector_counts = plan.counts;
+    for (double target : options.paired_target_probabilities) {
+        if (!(target > 0.0 && target < 1.0) || !std::isfinite(target) ||
+            scenario.mode != OutputMode::ecai) {
+            throw std::invalid_argument("simulation: invalid paired ECAi target");
+        }
+        result.paired_ecai_l_s_person.emplace_back(plan.n, 0.0);
+    }
 
     // Step 1: every zero-infector row becomes exactly +0.0 before any
     // assignment or model input is requested (MODEL_SPECIFICATION.md 11.1,

@@ -161,6 +161,25 @@ const std::string& take_value(const std::vector<std::string>& args, std::size_t&
 // after the whole argument vector has been consumed, so a rejection never
 // depends on flag order.
 void validate_domains(const CliOptions& options) {
+    if (!options.target_probabilities.empty()) {
+        if (options.target_probabilities.size() > 64 ||
+            options.target_probabilities.front() != options.target_probability ||
+            !options.target_probability_explicit ||
+            options.mode != simulation::OutputMode::ecai || !options.raw_output_directory ||
+            options.output_directory || options.summary_file || options.replicates_file ||
+            options.write_replicates) {
+            reject("paired targets require ECAi mode and --raw-output-directory, without other output options");
+        }
+        std::set<double> unique;
+        for (double value : options.target_probabilities) {
+            if (!std::isfinite(value) || !(value > 0.0 && value < 1.0) ||
+                !unique.insert(value).second) {
+                reject("paired targets must be unique finite probabilities strictly between 0 and 1");
+            }
+        }
+    } else if (options.raw_output_directory) {
+        reject("--raw-output-directory requires --target-probabilities");
+    }
     if (options.simulations_n < 1) {
         reject("flag --simulations requires N >= 1");
     }
@@ -296,6 +315,7 @@ const std::vector<std::string>& accepted_flags() {
         "--occupants",      "--volume-m3",         "--mask-efficiency",
         "--mode",           "--input-ecai",        "--infector-policy",
         "--qer-distribution",
+        "--target-probabilities", "--raw-output-directory",
         "--output-directory", "--summary-file",    "--replicates-file",
         "--write-replicates", "--help"};
     return flags;
@@ -337,6 +357,9 @@ std::string help_text() {
         "                              each replicate, 0 <= P <= 1. Default 0.96.\n"
         "  --target-probability P      Target infection probability over the effective\n"
         "                              duration, 0 < P < 1. Default 0.001.\n"
+        "  --target-probabilities LIST Comma-separated distinct targets, 0 < P < 1.\n"
+        "                              The first determines the existing seed fingerprint.\n"
+        "                              Requires --raw-output-directory; ECAi mode only.\n"
         "  --duration-hours HOURS      Exposure duration in hours, finite and > 0.\n"
         "                              Default 1. The target probability always applies\n"
         "                              over the effective duration and is an hourly\n"
@@ -389,6 +412,7 @@ std::string help_text() {
         "Output controls (Stage 12 parses and records these only; no directory or file\n"
         "is created, opened, written or checked until Stage 13):\n"
         "  --output-directory PATH     Directory for Stage 13 output.\n"
+        "  --raw-output-directory PATH New directory for paired per-simulation data.\n"
         "  --summary-file PATH         Summary file path for Stage 13 output.\n"
         "  --replicates-file PATH      Per-replicate file path for Stage 13 output.\n"
         "  --write-replicates          Request per-replicate output in Stage 13.\n"
@@ -465,6 +489,17 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
         } else if (arg == "--target-probability") {
             options.target_probability = parse_double_strict(value, arg);
             options.target_probability_explicit = true;
+        } else if (arg == "--target-probabilities") {
+            std::size_t start = 0;
+            while (true) {
+                const auto end = value.find(',', start);
+                options.target_probabilities.push_back(parse_double_strict(
+                    value.substr(start, end == std::string::npos ? end : end - start), arg));
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+        } else if (arg == "--raw-output-directory") {
+            options.raw_output_directory = require_identifier(value, arg);
         } else if (arg == "--duration-hours") {
             options.duration_hours = parse_double_strict(value, arg);
             options.duration_explicit = true;
@@ -537,6 +572,14 @@ CliOptions parse_cli(const std::vector<std::string>& args) {
 
     if (!options.category_supplied) {
         reject("--category NAME is required; there is no default category");
+    }
+
+    if (!options.target_probabilities.empty()) {
+        if (seen.count("--target-probability")) {
+            reject("--target-probability cannot be combined with --target-probabilities");
+        }
+        options.target_probability = options.target_probabilities.front();
+        options.target_probability_explicit = true;
     }
 
     options.custom_scenario = options.target_probability_explicit || options.duration_explicit ||

@@ -85,6 +85,9 @@ struct CliOptions {
     // Scientific run inputs with a frozen default (no category source).
     double percentile = kDefaultPercentile;
     double target_probability = kDefaultTargetProbability;
+    // Nonempty only for paired multi-target output, in seed-significant order.
+    std::vector<double> target_probabilities;
+    std::optional<std::string> raw_output_directory;
     double duration_hours = kDefaultDurationHours;
 
     // The four category scientific inputs. An unset optional means "use the

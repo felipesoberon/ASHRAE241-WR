@@ -218,6 +218,8 @@ struct ReplicateOptions {
     sampling_plan::ResourcePolicy policy{};
     EvaluationOrder evaluation_order = EvaluationOrder::forward;
     bool collect_audit = false;
+    // Optional extra targets evaluated against each row's already computed QER.
+    std::vector<double> paired_target_probabilities;
 };
 
 // Public run configuration for multi-replicate orchestration. It is the same
@@ -262,6 +264,11 @@ struct RowAudit {
     std::size_t simulation_index = 0;
     long long infector_count = 0;
     bool active = false;
+    // Inputs needed to recompute ECAi at other target probabilities using
+    // exactly the same susceptible and infector samples.
+    double susceptible_pbr_m3h = 0.0;
+    double gamma_per_h = 0.0;
+    double lambda_per_h = 0.0;
     double qer_sum_per_h = 0.0;
     double ecai_raw_l_s_person = 0.0;
     double ecai_l_s_person = 0.0;
@@ -315,6 +322,8 @@ struct ReplicateResult {
     // the other stays at its default (empty vector, 0.0 percentile).
     OutputMode mode = OutputMode::ecai;
     std::vector<double> ecai_l_s_person;
+    // Indexed by paired target, then by original simulation index.
+    std::vector<std::vector<double>> paired_ecai_l_s_person;
     double percentile = 0.0;                // the p that was applied
     double percentile_l_s_person = 0.0;     // raw, unrounded; ECAi mode only
     std::vector<double> probability;        // probability mode only

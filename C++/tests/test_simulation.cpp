@@ -10,6 +10,7 @@
 // orchestration against the specification rather than against itself.
 
 #include "simulation.h"
+#include "model.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1695,6 +1696,43 @@ void test_run_replicates_batch_policy_consistency() {
           "every replicate in an un-overridden batch resolves to InfectorPolicy::community");
 }
 
+void test_paired_targets() {
+    const OccupancyCategory patient = lookup_occupancy_category("Patient room");
+    const EffectiveConfig config = make_config(patient, 300);
+    for (bool risk_averse : {false, true}) {
+        EffectiveOverrides overrides;
+        if (risk_averse) overrides = risk_averse_overrides();
+        ecai_cpp2::simulation::ReplicateOptions options;
+        options.collect_audit = true;
+        options.paired_target_probabilities = {0.001, 0.01, 0.5};
+        const auto paired = ecai_cpp2::simulation::run_replicate(485, config, 0, patient, overrides, options);
+        const auto original = ecai_cpp2::simulation::run_replicate(485, config, 0, patient, overrides);
+        check(paired.ecai_l_s_person == original.ecai_l_s_person,
+              "paired evaluation preserves every original output");
+        check(paired.paired_ecai_l_s_person.at(0) == original.ecai_l_s_person,
+              "matching target reproduces every original output exactly");
+        bool matches = true;
+        for (std::size_t row = 0; row < paired.audit.rows.size(); ++row) {
+            const auto& audit = paired.audit.rows[row];
+            for (std::size_t t = 0; t < options.paired_target_probabilities.size(); ++t) {
+                double expected = 0.0;
+                if (audit.active) {
+                    const double target = options.paired_target_probabilities[t];
+                    const double mask = 1.0 - patient.mask_efficiency;
+                    const double raw = (audit.susceptible_pbr_m3h * mask * mask * audit.qer_sum_per_h /
+                                        -std::log1p(-target) - patient.volume_m3 *
+                                        (audit.gamma_per_h + audit.lambda_per_h)) /
+                                       (3.6 * static_cast<double>(patient.i0));
+                    expected = std::max(0.0, raw);
+                }
+                if (std::abs(expected - paired.paired_ecai_l_s_person[t][row]) >
+                    1e-12 * std::max(1.0, std::abs(expected))) matches = false;
+            }
+        }
+        check(matches, "paired results match independent equation for every sampled row");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1722,6 +1760,7 @@ int main() {
     test_policy_scenario_plan_mismatch_rejected();
     test_risk_averse_invalid_domain_rejected_at_simulation_layer();
     test_run_replicates_batch_policy_consistency();
+    test_paired_targets();
 
     std::cout << g_checks << " checks executed.\n";
     if (g_checks == 0) {

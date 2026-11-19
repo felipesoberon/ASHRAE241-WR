@@ -18,6 +18,7 @@
 #include "qer_direct.h"
 #include "simulation.h"
 #include "output.h"
+#include "paired_output.h"
 
 #ifndef ECAI_CPP2_PROTECTED_LEGACY_TREE
 #define ECAI_CPP2_PROTECTED_LEGACY_TREE ""
@@ -70,6 +71,11 @@ int main(int argc, char** argv) {
         }
 
         const ecai_cpp2::cli::ResolvedRun run = ecai_cpp2::cli::resolve_run(options);
+        if (!options.target_probabilities.empty()) {
+            ecai_cpp2::paired_output::run_and_write(run, options, ECAI_CPP2_PROTECTED_LEGACY_TREE);
+            std::cout << "paired_results directory=\"" << *options.raw_output_directory << "\"\n";
+            return 0;
+        }
         const ecai_cpp2::simulation::ReplicateBatch batch = ecai_cpp2::simulation::run_replicates(
             run.base_seed, run.config, *run.category, run.overrides);
 

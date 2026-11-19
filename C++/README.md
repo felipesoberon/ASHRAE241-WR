@@ -39,7 +39,7 @@ The second command is a bounded example, not the default study workload.
 
 Defaults are `N=10000` simulations per replicate, `R=500` replicates, percentile `0.96`, confidence `0.95`, target probability `0.001`, duration `1` hour, and base seed `485`. Community infection rate, occupancy, volume, and mask efficiency come from the selected category. General categories use community rate `0.01` and mask efficiency `0`; the five Health Care categories use `0.03` and `0.30`.
 
-The executable accepts exactly 17 flags. Their domains, provenance rules, category aliases, and supported combinations are defined in [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md).
+The executable's flags, domains, provenance rules, category aliases, and supported combinations are defined in [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md).
 
 ## Results and output
 
@@ -48,6 +48,14 @@ A successful run always prints one console-summary line. CSV output is opt-in. `
 The summary CSV has exactly 89 columns and one data row. The replicate CSV has exactly 19 columns and `R` data rows; it contains replicate percentile estimates and accounting metadata, not all `N` raw ECAi values.
 
 Within each replicate the reported result is the selected percentile of the `N` ECAi values. Across replicates, the raw mean, sample SD, SE, minimum, maximum, and two-sided Student-t CI are calculated from the unrounded replicate percentile estimates. The CI is an approximate randomized-LHS Monte Carlo interval for the mean of that estimator, not a CI for the population percentile, individual ECAi, or total model uncertainty. `5 * ceil(raw_mean / 5)` is reported separately as the publication comparator and never enters the raw statistics.
+
+For an opt-in paired run, pass an ordered comma-separated list to
+`--target-probabilities` and a new directory to `--raw-output-directory`.
+The same sampled scenarios are used for every target; the first target supplies
+the seed fingerprint. Each replicate's individual ECAi values are streamed to
+`ecai.bin`, with a completed `manifest.txt`. For arbitrary per-replicate
+percentiles, use `python3 analysis/read_paired.py DIRECTORY --percentiles
+0.75,0.9,0.96`. See the CLI reference for the format and safety details.
 
 ## Validation status
 

@@ -228,10 +228,11 @@ int main() {
             "--occupants",          "--volume-m3",       "--mask-efficiency",
             "--mode",               "--input-ecai",      "--infector-policy",
             "--qer-distribution",
+            "--target-probabilities", "--raw-output-directory",
             "--output-directory",   "--summary-file",    "--replicates-file",
             "--write-replicates",   "--help"};
         check(planned.size() == cli::accepted_flags().size(),
-              "the parser accepts exactly the 21 planned flags");
+              "the parser accepts exactly the planned flags");
         for (const std::string& flag : planned) {
             bool known = false;
             for (const std::string& parser_flag : cli::accepted_flags()) {
@@ -693,6 +694,36 @@ int main() {
 
     // --- Structural rejections ----------------------------------------------
     {
+        const Args paired = {"--category", "Exam room", "--target-probabilities", "0.001,0.01,0.5",
+                             "--raw-output-directory", "new-output"};
+        const auto options = cli::parse_cli(paired);
+        const auto run = cli::resolve_run(options);
+        check(options.target_probabilities.size() == 3 && run.config.target_probability == 0.001,
+              "first listed target supplies the existing seed configuration");
+        const auto single = cli::resolve_run(cli::parse_cli(
+            Args{"--category", "Exam room", "--target-probability", "0.001"}));
+        check(ecai_cpp2::seed_manager::canonical_config_string(run.config) ==
+                  ecai_cpp2::seed_manager::canonical_config_string(single.config),
+              "paired first target preserves the equivalent single-target fingerprint");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1,0.1",
+                           "--raw-output-directory", "out"}, "duplicate paired targets");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1,",
+                           "--raw-output-directory", "out"}, "empty paired target");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1,1",
+                           "--raw-output-directory", "out"}, "out-of-range paired target");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1"},
+                      "paired targets without output directory");
+        expect_reject(Args{"--category", "Exam room", "--raw-output-directory", "out"},
+                      "paired output without targets");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1",
+                           "--target-probability", "0.1", "--raw-output-directory", "out"},
+                      "mixed single and paired target flags");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1",
+                           "--mode", "probability", "--raw-output-directory", "out"},
+                      "paired targets in probability mode");
+        expect_reject(Args{"--category", "Exam room", "--target-probabilities", "0.1",
+                           "--output-directory", "other", "--raw-output-directory", "out"},
+                      "paired and legacy output destinations combined");
         expect_reject(Args{}, "an invocation with no arguments at all");
         expect_reject(Args{"--simulations", "8"}, "an invocation with no --category");
         expect_reject(Args{"--category", ""}, "an empty category string");
