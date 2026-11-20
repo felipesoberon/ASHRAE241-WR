@@ -3,8 +3,9 @@
 This working comparison places the published ASHRAE 241 ECAi values used in
 the model beside candidate ASHRAE 62.1-2025 ventilation-rate procedure (VRP)
 breathing-zone outdoor-air values and representative ASHRAE 170-2025 outdoor-air
-rates. Both are expressed in L/s per person, but
-they serve different purposes and must not be treated as equivalent requirements.
+rates and the baseline outdoor-air rates published by Jones et al. All are
+expressed in L/s per person, but outdoor air and ECAi serve different purposes
+and must not be treated as equivalent requirements.
 
 ## Method
 
@@ -29,37 +30,49 @@ filtration and other provisions must be assessed separately.
 
 ## Working comparison
 
-| ASHRAE 241 model space | 241 ECAi, L/s/person | Candidate category and outdoor-air source | Outdoor air, L/s/person |
-|---|---:|---|---:|
-| Cell | 15 | Cell | 4.90 |
-| Dayroom | 20 | Dayroom | 3.50 |
-| Food and beverage facilities | 30 | Restaurant dining rooms (candidate) | 5.14 |
-| Gym | 40 | Gym, sports arena play area (candidate) | 22.86 |
-| Office | 15 | Office space | 8.50 |
-| Retail | 20 | Sales, except listed exceptions (candidate) | 7.80 |
-| Transportation waiting | 30 | Transportation waiting | 4.25 |
-| Classroom | 20 | Classroom, age 9+ (candidate) | 6.71 |
-| Lecture hall | 25 | Lecture hall, fixed seats | 4.01 |
-| Manufacturing | 25 | Manufacturing, hazardous materials not used (candidate) | 17.86 |
-| Sorting, packing, light assembly | 10 | Sorting, packing, light assembly | 12.37 |
-| Warehouse | 10 | 62.1 warehouse, using assumed 6 m ceiling | 8.00 |
-| Exam room | 20 | 170 inpatient general examination room, Table 7-1 | 7.59 |
-| Group treatment area | 35 | 170 outpatient cancer treatment area, Table 8-1 | 7.50 |
-| Patient room | 35 | 170 inpatient patient room, Table 7-1 | 15.00 |
-| Resident room | 25 | 170 nursing-home resident room, Table 9-1 | 15.00 |
-| Waiting room | 45 | 170 emergency-department public waiting area, Table 8-1 | 5.00 |
-| Auditorium | 25 | Auditorium seating area | 2.71 |
-| Place of religious worship | 25 | Places of religious worship | 2.75 |
-| Museum | 30 | Museums/galleries | 4.71 |
-| Convention | 30 | 62.1 gambling casinos (representative) | 4.79 |
-| Spectator area | 25 | Spectator areas | 4.01 |
-| Lobbies | 25 | Public assembly lobbies (candidate) | 2.70 |
-| Common space | 25 | 62.1 hotel lobbies/prefunction (representative) | 4.80 |
-| Dwelling unit | 15 | 62.1 hotel bedroom/living room (representative) | 5.50 |
+| ASHRAE 241 model space | 241 ECAi, L/s/person | Candidate category and outdoor-air source | Our outdoor air, L/s/person | Jones baseline, L/s/person |
+|---|---:|---|---:|---:|
+| Cell | 15 | Cell | 4.90 | 4.9 |
+| Dayroom | 20 | Dayroom | 3.50 | 3.5 |
+| Food and beverage facilities | 30 | Restaurant dining rooms (candidate) | 5.14 | 5.6 |
+| Gym | 40 | Gym, sports arena play area (candidate) | 22.86 | 11 |
+| Office | 15 | Office space | 8.50 | 8.5 |
+| Retail | 20 | Sales, except listed exceptions (candidate) | 7.80 | 7.8 |
+| Transportation waiting | 30 | Transportation waiting | 4.25 | 6.8 |
+| Classroom | 20 | Classroom, age 9+ (candidate) | 6.71 | 7.4 |
+| Lecture hall | 25 | Lecture hall, fixed seats | 4.01 | 2.9 |
+| Manufacturing | 25 | Manufacturing, hazardous materials not used (candidate) | 17.86 | 9.3 |
+| Sorting, packing, light assembly | 10 | Sorting, packing, light assembly | 12.37 | 11 |
+| Warehouse | 10 | 62.1 warehouse, using assumed 6 m ceiling | 8.00 | 6.5 |
+| Exam room | 20 | 170 inpatient general examination room, Table 7-1 | 7.59 | 7.5 |
+| Group treatment area | 35 | 170 outpatient cancer treatment area, Table 8-1 | 7.50 | 7.5 |
+| Patient room | 35 | 170 inpatient patient room, Table 7-1 | 15.00 | 15 |
+| Resident room | 25 | 170 nursing-home resident room, Table 9-1 | 15.00 | 15 |
+| Waiting room | 45 | 170 emergency-department public waiting area, Table 8-1 | 5.00 | 5 |
+| Auditorium | 25 | Auditorium seating area | 2.71 | 3.5 |
+| Place of religious worship | 25 | Places of religious worship | 2.75 | 2.8 |
+| Museum | 30 | Museums/galleries | 4.71 | 4.6 |
+| Convention | 30 | 62.1 gambling casinos (representative) | 4.79 | 4.6 |
+| Spectator area | 25 | Spectator areas | 4.01 | 4.7 |
+| Lobbies | 25 | Public assembly lobbies (candidate) | 2.70 | 3.5 |
+| Common space | 25 | 62.1 hotel lobbies/prefunction (representative) | 4.80 | 1 |
+| Dwelling unit | 15 | 62.1 hotel bedroom/living room (representative) | 5.50 | 6.8 |
 
 The non-healthcare values are 62.1-2025 breathing-zone rates at its default
 occupant density, except for the warehouse assumption below. The healthcare values are 170-2025 outdoor ACH converted
 using 241 model inputs. Their shared units do not make the methods equivalent.
+
+The Jones column reproduces the baseline outdoor-air rates in Jones et al.,
+Table 4, as published; Table 2 provides the underlying model inputs. The
+contour plots use these published baseline values as their outdoor-air
+reference, including Standard 62.2 for residential cases, alongside the
+Standard 241 ECAi reference. The earlier calculations remain here as a
+separate comparison based on the stated 2025 mappings and assumptions.
+
+For common space, Jones Table 4 reports 1.0 L/s per person, whereas its
+Table 2 inputs (2.5 L/s per person, 0.3 L/s per m², 500 m² and 150
+occupants) imply 3.5 L/s per person. The plotted reference uses the
+published Table 4 value pending clarification.
 
 ## Warehouse assumption
 
@@ -107,3 +120,4 @@ particular, separately check whether Standard 62.2 applies to a dwelling.
 - ASHRAE/ASHE 170-2025, Tables 7-1, 8-1 and 9-1.
 - McNulty, English and Zaatari, “Mapping Space Types Across ASHRAE Standards 62.1, 170, & 241,” ASHRAE Journal, June 2025, Table 2 and supplementary 62.1 mapping. The mapping uses 62.1-2022; rates above are independently read from 62.1-2025.
 - ASHRAE 241 published comparator values as recorded in [`../../src/category_data.cpp`](../../src/category_data.cpp). These are the model's reference values, not values derived by this comparison.
+- Jones et al., “Risk modeling for ASHRAE Standard 241-2023 — Control of infectious aerosols,” Building and Environment 283 (2025), 113318, Tables 2 and 4. https://doi.org/10.1016/j.buildenv.2025.113318
